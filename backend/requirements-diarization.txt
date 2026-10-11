@@ -1,0 +1,3 @@
+# Optional; provision a licensed local Pyannote pipeline and set SPEAKER_MODEL_PATH.
+-r requirements.txt
+pyannote.audio>=3.3,<5
