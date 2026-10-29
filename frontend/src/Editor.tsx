@@ -1,3 +1,4 @@
+import { ExportDialog } from "./ExportDialog";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -37,6 +38,10 @@ export function Editor() {
   const positionRef = useRef(0);
   const [buffering, setBuffering] = useState(false);
   const [previewRetry, setPreviewRetry] = useState(0);
+  const [exportQuote, setExportQuote] = useState<{seconds: number; reused: boolean; can_remove_watermark: boolean} | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportError, setExportError] = useState("");
+  const [canRemoveWatermark, setCanRemoveWatermark] = useState(false);
   const [siblings, setSiblings] = useState<Clip[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [clip, setClip] = useState<Clip | null>(null),
@@ -117,6 +122,9 @@ export function Editor() {
     if (video.current) video.current.volume = edits?.volume ?? 1;
   }, [edits?.volume, segmentIndex, previewRetry]);
   useEffect(() => {
+    if (video.current) { video.current.playbackRate = edits?.speed ?? 1; video.current.preservesPitch = true; }
+  }, [edits?.speed, segmentIndex, previewRetry]);
+  useEffect(() => {
     if (!playing || !edits) return;
     let frame = 0;
     const cut = edits.segments[segmentIndex];
@@ -129,6 +137,16 @@ export function Editor() {
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [playing, segmentIndex, edits?.segments]);
+  useEffect(() => {
+    if (!edits) return;
+    let active = true;
+    setExportQuote(null);
+    const timer = setTimeout(() => {
+      api<{seconds: number; reused: boolean; can_remove_watermark: boolean}>(`/clips/${id}/export-quote`, {method: "POST", body: json(edits)})
+        .then(value => {if (active) {setExportQuote(value); setCanRemoveWatermark(value.can_remove_watermark);}}).catch(() => {});
+    }, 300);
+    return () => {active = false; clearTimeout(timer);};
+  }, [id, edits, project?.config?.workflow]);
   function change(next: Edits) {
     if (!edits) return;
     setPast((p) => [...p.slice(-49), edits]);
@@ -285,29 +303,32 @@ export function Editor() {
           <button
             className="button primary small"
             disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await save();
-                await api(`/clips/${id}/exports`, { method: "POST" });
-                navigate("/studio/exports");
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
+            onClick={() => {setExportError(""); setExportOpen(true);}}
           >
             {busy ? (
               <LoaderCircle className="spin" size={16} />
             ) : (
               <Download size={16} />
             )}
-            Export
+            Export{project.config?.workflow === "manual" ? (exportQuote ? (exportQuote.reused ? " · reuse free" : ` · ${(exportQuote.seconds / 60).toFixed(3)} credit min`) : " · calculating cost…") : ""}
           </button>
         </div>
       </div>
       <ErrorBox error={error} />
+      {exportOpen && <ExportDialog open={exportOpen} title={clip.title} edits={edits} quote={exportQuote}
+        busy={busy} error={exportError} canRemoveWatermark={canRemoveWatermark}
+        onWatermark={watermark => change({...edits, watermark})}
+        onClose={() => setExportOpen(false)}
+        onConfirm={async () => {
+          setBusy(true); setExportError("");
+          try {
+            await save();
+            await api(`/clips/${id}/exports`, {method:"POST"});
+            setExportOpen(false);
+            navigate("/studio/exports");
+          } catch(e) {setExportError((e as Error).message);}
+          finally {setBusy(false);}
+        }}/>}
       <div className="editor-workspace">
         <aside className="editor-library">
           <h3>Project clips</h3>
@@ -375,6 +396,8 @@ export function Editor() {
                   if (!e.currentTarget.ended) resume.current = false;
                 }}
                 style={{
+                  filter: `brightness(${edits.brightness ?? 1}) contrast(${edits.contrast ?? 1}) saturate(${edits.saturation ?? 1})`,
+                  transform: edits.flip_horizontal ? "scaleX(-1)" : undefined,
                   objectFit: edits.reframe === "fit" ? "contain" : "cover",
                   objectPosition: `${edits.focus_x * 100}% center`,
                 }}
@@ -388,6 +411,8 @@ export function Editor() {
                   );
                   pendingSeek.current = null;
                   e.currentTarget.volume = edits.volume ?? 1;
+                  e.currentTarget.playbackRate = edits.speed ?? 1;
+                  e.currentTarget.preservesPitch = true;
                 }}
                 onCanPlay={() => {
                   setBuffering(false);
@@ -479,7 +504,7 @@ export function Editor() {
               {playing ? <Pause size={20} /> : <Play size={20} />}
             </button>
             <span>
-              {time(elapsed)} <em>/ {time(totalDuration(edits))}</em>
+              {time(elapsed / (edits.speed ?? 1))} <em>/ {time(totalDuration(edits) / (edits.speed ?? 1))}</em>
             </span>
             <span className="transport-end">
               <Volume2 size={16} />
@@ -541,7 +566,7 @@ export function Editor() {
                     <input
                       type="range"
                       aria-label={`Cut ${i + 1} trim start`}
-                      min={Math.max(0, clip.start - 10)}
+                      min={0}
                       max={s.end - 0.1}
                       step="0.1"
                       value={s.start}
@@ -927,6 +952,8 @@ export function Editor() {
                   </div>
                 ))}
               </div>
+              <button type="button" className="button secondary" disabled={edits.words.length >= 10000}
+                onClick={() => change({...edits, captions: {...edits.captions, enabled: true}, words: [...edits.words, {start: position, end: Math.min(position + .5, project.media.duration ?? clip.end), word: "Text"}]})}>Add caption at playhead</button>
               {!edits.words.length && (
                 <p>No spoken words detected in this clip.</p>
               )}
@@ -963,7 +990,7 @@ export function Editor() {
                   }
                 />
               </label>
-              <small>Manual focus is used when no face is detected.</small>
+              <small>Auto mode follows a consistent detected face and smooths movement during export. It does not identify the speaker. Focus provides a fallback when detection is lost; use Manual crop or Fit entire frame for crowded scenes. Browser framing is approximate.</small>
               <label>
                 Export size
                 <select
@@ -1042,6 +1069,62 @@ export function Editor() {
                 />
                 Show headline on video
               </label>
+              <fieldset className="editor-adjustments">
+                <legend>Speed & transitions</legend>
+                <label>Between-cut transition
+                  <select value={edits.transition ?? "none"} onChange={(e) => change({...edits, transition: e.target.value as Edits["transition"]})}>
+                    <option value="none">None · hard cut</option><option value="fade">Crossfade</option>
+                    <option value="dissolve">Dissolve</option><option value="slideleft">Slide left</option>
+                    <option value="slideright">Slide right</option><option value="wipeleft">Wipe left</option><option value="wiperight">Wipe right</option>
+                  </select>
+                </label>
+                <label>Transition length · {edits.transition_duration ?? .3}s
+                  <input type="range" min="0.1" max="1" step="0.1" disabled={!edits.transition || edits.transition === "none"}
+                    value={edits.transition_duration ?? .3} onChange={(e) => change({...edits, transition_duration: Number(e.target.value)})} />
+                </label>
+                <p className="fine-print">Split into at least two cuts to add transitions. Transitions are export-only, with audio crossfades. Overlap shortens the export and its credit cost; duration is capped at half the shortest cut. Preview playback and trimming show source time without overlap.</p>
+                <label>Video speed · {edits.speed ?? 1}×
+                  <select value={edits.speed ?? 1} onChange={(e) => change({...edits, speed: Number(e.target.value)})}>
+                    {[.25, .5, .75, 1, 1.25, 1.5, 2, 3, 4].map(rate => <option key={rate} value={rate}>{rate}×{rate === 1 ? " · Normal" : ""}</option>)}
+                  </select>
+                </label>
+                <p className="fine-print">Applies to all cuts and exports. Audio pitch is preserved. Timeline trim positions remain in source seconds.</p>
+                {(["fade_in", "fade_out"] as const).map(key => <label key={key}>{key === "fade_in" ? "Fade in" : "Fade out"} · {edits[key] ?? 0}s
+                  <input type="range" min="0" max="2" step="0.1" value={edits[key] ?? 0} onChange={(e) => change({...edits, [key]: Number(e.target.value)})} />
+                </label>)}
+                <p className="fine-print">Fades affect picture and sound in exports, including overlays. Preview fades by rendering an export. Each fade is capped at half the finished duration.</p>
+              </fieldset>
+              <fieldset className="editor-adjustments">
+                <legend>Picture adjustments</legend>
+                <p className="fine-print">Applied to all cuts. Captions and logos keep their original colors.</p>
+                <label>Quick look
+                  <select value="" onChange={(e) => {
+                    const looks: Record<string, Partial<Edits>> = {
+                      natural: {brightness: 1, contrast: 1, saturation: 1},
+                      vivid: {brightness: 1.03, contrast: 1.12, saturation: 1.3},
+                      soft: {brightness: 1.06, contrast: .9, saturation: .85},
+                      mono: {brightness: 1, contrast: 1.1, saturation: 0},
+                    };
+                    if (looks[e.target.value]) change({...edits, ...looks[e.target.value]});
+                  }}>
+                    <option value="" disabled>Apply a preset…</option>
+                    <option value="natural">Natural</option><option value="vivid">Vivid</option>
+                    <option value="soft">Soft</option><option value="mono">Black & white</option>
+                  </select>
+                </label>
+                {(["brightness", "contrast", "saturation"] as const).map((key) => (
+                  <label key={key}>{key[0].toUpperCase() + key.slice(1)} · {Math.round((edits[key] ?? 1) * 100)}%
+                    <input type="range" min={key === "saturation" ? 0 : .5} max={key === "saturation" ? 2 : 1.5} step={.01}
+                      value={edits[key] ?? 1} onChange={(e) => change({...edits, [key]: Number(e.target.value)})} />
+                  </label>
+                ))}
+                <label className="checkbox"><input type="checkbox" checked={edits.flip_horizontal ?? false}
+                  onChange={(e) => change({...edits, flip_horizontal: e.target.checked})} />Mirror video horizontally</label>
+                <button type="button" className="button" onClick={() => change({...edits, brightness: 1, contrast: 1, saturation: 1, flip_horizontal: false})}>Reset picture</button>
+              </fieldset>
+              <button type="button" className="button" onClick={() => change({...edits, volume: (edits.volume ?? 1) === 0 ? 1 : 0})}>
+                {(edits.volume ?? 1) === 0 ? "Unmute audio" : "Mute audio"}
+              </button>
               <label>
                 Audio volume
                 <input

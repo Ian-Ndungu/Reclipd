@@ -1,0 +1,21 @@
+# Experimental low-memory overlay. Requires host swap and real-server testing.
+# docker compose -f compose.yaml -f compose.micro.yaml up -d --build
+services:
+  api:
+    environment:
+      LOW_MEMORY_MODE: "true"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+  worker:
+    mem_limit: 700m
+    memswap_limit: 3g
+    cpus: 1.0
+    command: celery -A app.worker.celery worker --loglevel=INFO --concurrency=1 --max-tasks-per-child=1 --prefetch-multiplier=1
+    environment:
+      LOW_MEMORY_MODE: "true"
+      WHISPER_CPU_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MALLOC_ARENA_MAX: "2"
+  db:
+    command: postgres -c shared_buffers=32MB -c work_mem=1MB -c maintenance_work_mem=16MB -c max_connections=30

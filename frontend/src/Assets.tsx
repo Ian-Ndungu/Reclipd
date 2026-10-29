@@ -8,7 +8,9 @@ export type Asset = {
   name: string;
   family: string | null;
 };
-export function AssetUploader() {
+export function AssetUploader({
+  onUploaded,
+}: { onUploaded?: () => void } = {}) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
@@ -23,6 +25,7 @@ export function AssetUploader() {
         const data = new FormData(e.currentTarget);
         try {
           const a = await api<Asset>("/assets", { method: "POST", body: data });
+          onUploaded?.();
           setMessage(
             `${a.name} uploaded. It is now available in the clip editor.`,
           );
@@ -69,7 +72,12 @@ export function AssetUploader() {
     </form>
   );
 }
-export function BrandAssetFields() {
+export function BrandAssetFields({
+  logoId,
+  fontId,
+}: { logoId?: string | null; fontId?: string | null } = {}) {
+  const [logo, setLogo] = useState(logoId || ""),
+    [font, setFont] = useState(fontId || "");
   const [assets, setAssets] = useState<Asset[]>([]);
   useEffect(() => {
     api<Asset[]>("/assets")
@@ -80,7 +88,11 @@ export function BrandAssetFields() {
     <>
       <label>
         Logo
-        <select name="logo_asset_id">
+        <select
+          name="logo_asset_id"
+          value={logo}
+          onChange={(e) => setLogo(e.target.value)}
+        >
           <option value="">No logo</option>
           {assets
             .filter((a) => a.kind === "logo")
@@ -93,7 +105,11 @@ export function BrandAssetFields() {
       </label>
       <label>
         Custom font
-        <select name="custom_font_id">
+        <select
+          name="custom_font_id"
+          value={font}
+          onChange={(e) => setFont(e.target.value)}
+        >
           <option value="">Use built-in font</option>
           {assets
             .filter((a) => a.kind === "font")

@@ -27,6 +27,9 @@ def validate_public(info, video_id, max_seconds):
 
 def retrieve(video_id, target, progress):
     cfg = settings()
+    if cfg.videoscale_enabled:
+        from .videoscale import retrieve as cloud_retrieve
+        return cloud_retrieve(video_id, target, progress)
     if not cfg.youtube_download_enabled:
         raise MediaError("Public YouTube retrieval is disabled. Upload your original.")
     target = Path(target)

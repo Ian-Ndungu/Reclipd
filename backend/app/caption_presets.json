@@ -59,10 +59,12 @@
     "weight": 700,
     "color": "#FFFFFF",
     "emphasis_color": "#8CB9FF",
-    "stroke": 3,
+    "stroke": 0,
     "shadow": 0,
     "placement": "bottom",
-    "animation": "highlight"
+    "animation": "highlight",
+    "background": true,
+    "background_color": "#111827"
   },
   "editorial": {
     "preset": "editorial",

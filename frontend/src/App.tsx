@@ -1,3 +1,10 @@
+import {Onboarding} from "./Onboarding";
+import {validateFields,focusError,type FieldErrors} from "./formErrors";
+import {AccountSecurity, PasswordRecovery} from "./AccountSecurity";
+import {useTheme} from "./Theme";
+import {CreditOverview, DashboardCredits, type CreditUsage} from "./Credits";
+import {Payments} from "./Payments";
+import {DeleteNoticeProvider, useDeleteNotice} from "./DeleteNotice";
 import { PremiumLanding } from "./Landing";
 import { ThemeProvider, ThemeSelect } from "./Theme";
 import { readDraft, saveDraft, clearDraft } from "./draft";
@@ -17,6 +24,7 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom";
 import {
   Scissors,
@@ -45,6 +53,8 @@ import {
   Command,
   Menu,
   X,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { api, json, time, uploadProject } from "./api";
 import {
@@ -57,7 +67,8 @@ import {
   presets,
 } from "./types";
 import { Editor } from "./Editor";
-import { AssetUploader, BrandAssetFields } from "./Assets";
+import {CaptionGallery, BrandWorkspace} from "./StyleStudio";
+import {StudioPreferences, readStudioDefaults} from "./StudioPreferences";
 const Auth = createContext<{ user: User | null; refresh: () => Promise<void> }>(
   { user: null, refresh: async () => {} },
 );
@@ -122,16 +133,27 @@ export function PageTitle({
 export default function App() {
   return (
     <ThemeProvider>
-      <AppContent />
+      <DeleteNoticeProvider><AppContent /></DeleteNoticeProvider>
     </ThemeProvider>
   );
 }
 function AppContent() {
+  const {setTheme}=useTheme();
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true);
   const refresh = async () => {
     try {
-      setUser(await api<User>("/me"));
+      const account=await api<User>("/me");
+      let prefs=account.preferences || {};
+      if(!Object.keys(prefs).length){
+        const local=readStudioDefaults(account.id);
+        let theme: "light"|"dark"|"system"="light";
+        try {const saved=window.localStorage.getItem("reclipd-theme"); if(saved==="dark"||saved==="system") theme=saved;} catch {}
+        try {prefs=await api("/me/preferences",{method:"PUT",body:json({...local,theme})});account.preferences=prefs;} catch {}
+      }
+      try {window.localStorage.setItem(`reclipd-defaults:${account.id}`,JSON.stringify(prefs));} catch {}
+      setTheme(prefs.theme || "light");
+      setUser(account);
     } catch {
       setUser(null);
     }
@@ -149,6 +171,8 @@ function AppContent() {
     <Auth.Provider value={{ user, refresh }}>
       <Routes>
         <Route path="/" element={<Landing />} />
+        <Route path="/forgot-password" element={<PasswordRecovery />} />
+        <Route path="/reset-password" element={<PasswordRecovery reset />} />
         <Route
           path="/new"
           element={
@@ -171,7 +195,7 @@ function AppContent() {
           element={
             user ? (
               <Navigate
-                to={readDraft().mode ? "/studio/new" : "/studio"}
+                to={user.preferences?.onboarding_completed === false ? "/studio/welcome" : readDraft().mode ? "/studio/new" : "/studio"}
                 replace
               />
             ) : (
@@ -183,7 +207,8 @@ function AppContent() {
           path="/studio"
           element={user ? <Shell /> : <Navigate to="/auth" />}
         >
-          <Route index element={<Dashboard />} />
+          <Route index element={user?.preferences?.onboarding_completed === false ? <Navigate to="/studio/welcome" replace/> : <Dashboard />} />
+          <Route path="welcome" element={<Onboarding onComplete={refresh}/>} />
           <Route path="new" element={<NewProject />} />
           <Route path="projects/:id" element={<ProjectPage />} />
           <Route path="clips/:id" element={<Editor />} />
@@ -283,7 +308,7 @@ function Shell() {
             <div>
               Room for your next idea <span>FREE</span>
             </div>
-            <p>120 processing minutes to explore.</p>
+            <p>90 trial minutes, then 60 free minutes monthly.</p>
             <Link to="/studio/billing">
               View your usage <ArrowUpRight size={14} />
             </Link>
@@ -319,7 +344,7 @@ function Shell() {
             Workspace <ChevronRight size={14} /> AI Studio
           </span>
           <span className="local-label">
-            <span /> Development workspace
+            <span /> Your creative workspace
           </span>
         </header>
         <main>
@@ -336,7 +361,10 @@ function Landing() {
   return <PremiumLanding />;
 }
 function Authentication() {
-  const [register, setRegister] = useState(false),
+  const [authParams] = useSearchParams();
+  const [fieldErrors,setFieldErrors]=useState<FieldErrors>({});
+  const [showPassword, setShowPassword] = useState(false);
+  const [register, setRegister] = useState(authParams.get("mode") === "register"),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const { refresh } = useAuth();
@@ -355,7 +383,7 @@ function Authentication() {
           </h1>
           <p>Your next great moment starts here.</p>
         </div>
-        <small>RECLIPD AI Studio / Development preview</small>
+        <small>RECLIPD AI Studio / Create More. Edit Less.</small>
       </div>
       <div className="auth-form">
         <div className="eyebrow">WELCOME TO YOUR STUDIO</div>
@@ -366,9 +394,11 @@ function Authentication() {
             : "Pick up where your creativity left off."}
         </p>
         <ErrorBox error={error} />
-        <form
+        <form noValidate onChange={e=>{if(!(e.target instanceof HTMLInputElement))return;const name=e.target.name;setFieldErrors(old=>({...old,[name]:""}));setError("");}}
           onSubmit={async (e) => {
             e.preventDefault();
+            const invalid=validateFields(e.currentTarget);setFieldErrors(invalid);
+            if(Object.keys(invalid).length){focusError(e.currentTarget,invalid);return;}
             setBusy(true);
             setError("");
             const form = new FormData(e.currentTarget);
@@ -379,7 +409,10 @@ function Authentication() {
               });
               await refresh();
             } catch (err) {
-              setError((err as Error).message);
+              const text=(err as Error).message;
+              if(text==="Email or password is incorrect") setFieldErrors({password:text});
+              else if(text.includes("already exists")) setFieldErrors({email:text});
+              else setError(text);
             } finally {
               setBusy(false);
             }
@@ -388,25 +421,43 @@ function Authentication() {
           {register && (
             <label>
               Your name
-              <input name="name" autoComplete="name" required maxLength={100} />
+              <input name="name" autoComplete="name" required maxLength={100} aria-invalid={!!fieldErrors.name} aria-describedby={fieldErrors.name?"auth-name-error":undefined}/>
+              {fieldErrors.name&&<span id="auth-name-error" className="field-error" role="alert">{fieldErrors.name}</span>}
             </label>
           )}
           <label>
             Email address
-            <input name="email" type="email" autoComplete="email" required />
+            <input name="email" type="email" autoComplete="email" required aria-invalid={!!fieldErrors.email} aria-describedby={fieldErrors.email?"auth-email-error":undefined}/>
+            {fieldErrors.email&&<span id="auth-email-error" className="field-error" role="alert">{fieldErrors.email}</span>}
           </label>
-          <label>
-            Password
+          <div className="password-field">
+            <label htmlFor="auth-password">Password</label>
+            <div className="password-input">
             <input
+              id="auth-password"
+              aria-invalid={!!fieldErrors.password}
+              aria-describedby={fieldErrors.password?"auth-password-error":undefined}
               name="password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               autoComplete={register ? "new-password" : "current-password"}
               required
               minLength={10}
               maxLength={128}
               placeholder="At least 10 characters"
             />
-          </label>
+            <button
+              type="button"
+              className="password-toggle"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-controls="auth-password"
+              onClick={() => setShowPassword((visible) => !visible)}
+            >
+              {showPassword ? <EyeOff size={20} aria-hidden="true" /> : <Eye size={20} aria-hidden="true" />}
+            </button>
+            </div>
+            {fieldErrors.password&&<p id="auth-password-error" className="field-error" role="alert">{fieldErrors.password}</p>}
+          </div>
+          {!register && <div className="auth-recovery-link"><Link to="/forgot-password">Forgot password?</Link></div>}
           <button className="button primary" disabled={busy}>
             {busy ? (
               <LoaderCircle className="spin" size={16} />
@@ -420,7 +471,7 @@ function Authentication() {
         </form>
         <p className="auth-switch">
           {register ? "Already have an account?" : "New to RECLIPD?"}{" "}
-          <button onClick={() => setRegister(!register)}>
+          <button onClick={() => { setRegister(!register); setShowPassword(false); setFieldErrors({}); setError(""); }}>
             {register ? "Sign in" : "Create an account"}
           </button>
         </p>
@@ -438,14 +489,17 @@ function useProjects() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
-  return { items, error, loading };
+  return { items, error, loading, setItems };
 }
 function Dashboard() {
+  const {confirmDelete, notify} = useDeleteNotice();
   const { user, refresh } = useAuth();
   useEffect(() => {
     void refresh();
   }, []);
-  const { items, error, loading } = useProjects();
+  const { items, error, loading, setItems } = useProjects();
+  const [deleteError, setDeleteError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [search, setSearch] = useState(""),
     [filter, setFilter] = useState("all");
   const filtered = items.filter(
@@ -548,11 +602,12 @@ function Dashboard() {
             <p>Processing minutes</p>
             <strong>
               {Math.ceil((user?.used_seconds || 0) / 60)}
-              <small>of 120 available</small>
+              <small>Total tracked usage</small>
             </strong>
           </section>
         </div>
       </div>
+      <DashboardCredits/>
       <div className="section-heading">
         <div>
           <h2>
@@ -586,17 +641,14 @@ function Dashboard() {
           </button>
         ))}
       </div>
-      <ErrorBox error={error} />
+      <ErrorBox error={deleteError || error} />
       {loading ? (
         <p className="muted">Loading your projects…</p>
       ) : filtered.length ? (
         <div className="project-grid">
           {filtered.map((p) => (
-            <Link
-              className="project-card"
-              to={`/studio/projects/${p.id}`}
-              key={p.id}
-            >
+            <article className="project-card" key={p.id}>
+              <Link to={`/studio/projects/${p.id}`} style={{display: "block"}}>
               <div className="project-visual">
                 <Film size={36} />
                 <Badge status={p.status} />
@@ -609,7 +661,32 @@ function Dashboard() {
                   <ArrowUpRight size={16} />
                 </p>
               </div>
-            </Link>
+              </Link>
+              <div style={{padding: "0 20px 16px"}}>
+                <button className="button secondary" disabled={!!deletingId || p.status === "cancelling"}
+                  aria-label={`${["queued", "processing", "cancelling"].includes(p.status) ? "Cancel clipping" : "Delete project"} ${p.name}`}
+                  title={!['ready', 'failed', 'cancelled'].includes(p.status) ? "Stop clipping at the next safe checkpoint" : "Delete project"}
+                  onClick={async () => {
+                    if (["queued", "processing"].includes(p.status)) {
+                      setDeletingId(p.id); setDeleteError("");
+                      try { const updated = await api<Project>(`/projects/${p.id}/cancel`, {method: "POST"}); setItems(previous => previous.map(item => item.id === p.id ? updated : item)); }
+                      catch (e) { setDeleteError((e as Error).message); }
+                      finally { setDeletingId(null); }
+                      return;
+                    }
+                    if (!await confirmDelete(p.name)) return;
+                    setDeletingId(p.id); setDeleteError("");
+                    try {
+                      await api(`/projects/${p.id}`, {method: "DELETE"});
+                      notify(`“${p.name}” was removed from your workspace.`);
+                      setItems(previous => previous.filter(project => project.id !== p.id));
+                    } catch (e) { setDeleteError((e as Error).message); }
+                    finally { setDeletingId(null); }
+                  }}>
+                  {deletingId === p.id ? "Please wait…" : ["queued", "processing", "cancelling"].includes(p.status) ? (p.status === "cancelling" ? "Cancelling…" : "Cancel clipping") : "Delete project"}
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       ) : (
@@ -643,7 +720,8 @@ function Dashboard() {
 }
 function NewProject() {
   const { user } = useAuth();
-  const [draft] = useState(readDraft);
+  const [draft] = useState(() => ({...readStudioDefaults(user?.id), ...readDraft()}));
+  const [workflow, setWorkflow] = useState<"ai" | "manual">(draft.workflow || "ai");
   const [url, setUrl] = useState(draft.url || "");
   const [source, setSource] = useState(draft.source || "");
   const [uploadPercent, setUploadPercent] = useState(0);
@@ -653,7 +731,7 @@ function NewProject() {
   }, []);
   const [filePreview, setFilePreview] = useState("");
   const [linkReady, setLinkReady] = useState(false);
-  const [mode, setMode] = useState(draft.mode || "link"),
+  const [mode, setMode] = useState(draft.workflow === "manual" ? "upload" : draft.mode || "link"),
     [file, setFile] = useState<File | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -672,8 +750,8 @@ function NewProject() {
     <>
       <PageTitle
         eyebrow="A NEW BEGINNING"
-        title="Let’s find your best moments."
-        description="Start with a video. We’ll help you find the story inside."
+        title="How would you like to create?"
+        description="Let AI find the highlights, or make your own cuts. One account and one credit balance."
       />
       <form
         className="new-project"
@@ -683,14 +761,16 @@ function NewProject() {
           setError("");
           const f = new FormData(e.currentTarget);
           const config = {
+            workflow,
+            resolution: draft.resolution,
             content_category: String(f.get("content_category") || "auto"),
             instructions: String(f.get("instructions") || ""),
             caption_preset: String(f.get("caption_preset") || "bold"),
             aspect_ratio: "9:16",
             language: String(f.get("language") || "") || null,
-            clip_count: Number(f.get("clip_count")),
-            min_duration: Number(f.get("min_duration")),
-            max_duration: Number(f.get("max_duration")),
+            clip_count: Number(f.get("clip_count") || 5),
+            min_duration: Number(f.get("min_duration") || 15),
+            max_duration: Number(f.get("max_duration") || 60),
           };
           if (!user) {
             saveDraft({
@@ -734,9 +814,19 @@ function NewProject() {
         }}
       >
         <section className="panel">
+          <div className="workflow-choice" aria-label="Creation mode">
+            <button type="button" aria-pressed={workflow === "ai"} disabled={busy} onClick={() => setWorkflow("ai")}>
+              <strong>AI Clips</strong><span>Find highlights automatically. Credits use source duration.</span>
+            </button>
+            <button type="button" aria-pressed={workflow === "manual"} disabled={busy} onClick={() => {setWorkflow("manual"); setMode("upload");}}>
+              <strong>Manual Editor</strong><span>Choose every cut yourself. Pay credits only for new exports.</span>
+            </button>
+          </div>
+          {workflow === "manual" && <p className="fine-print">Upload and edit free. Each new export uses 1 credit minute per finished minute, calculated to the second. Unchanged exports are reused. Same balance and packages; no separate subscription. Start with up to 3 minutes, then select any part of your source.</p>}
           <div className="tabs">
             <button
               type="button"
+              disabled={workflow === "manual"}
               className={mode === "link" ? "active" : ""}
               onClick={() => setMode("link")}
             >
@@ -802,6 +892,7 @@ function NewProject() {
           </label>
         </section>
         <section className="panel">
+          <fieldset disabled={workflow === "manual"} hidden={workflow === "manual"} className="ai-options">
           <h3>Shape your highlights</h3>
           <p className="muted">
             We’ll rank candidates using signals found in your video.
@@ -901,14 +992,13 @@ function NewProject() {
               maxLength={1000}
               rows={3}
               defaultValue={draft.instructions}
-              placeholder="Focus on the discussion about product launches…"
+              placeholder="Focus on product launches. Avoid sponsorships. 01:00–05:00."
             />
             <small>
-              Uses literal keyword relevance in local fallback mode; a
-              configured local LLM can interpret the brief. Captions stay in the
-              spoken language.
+              Describe topics or names to prioritize. Use “Avoid sponsorships.” to exclude a topic, or “01:00–05:00” to limit the source range. Without a language model, matching uses transcript keywords. Set clip length and caption style using the controls; instructions do not translate speech or add footage.
             </small>
           </label>
+          </fieldset>
           {mode === "upload" && filePreview && (
             <video
               className="upload-preview"
@@ -922,7 +1012,7 @@ function NewProject() {
               <progress max="100" value={uploadPercent} />
               <p>
                 {uploadPercent}% uploaded
-                {uploadPercent === 100 ? " · creating project…" : ""}
+                {uploadPercent === 100 ? " · creating project…" : " · progress saved automatically"}
               </p>
             </div>
           )}
@@ -943,7 +1033,7 @@ function NewProject() {
               </>
             ) : (
               <>
-                Generate AI Clips <ArrowRight size={18} />
+                {workflow === "manual" ? "Open Manual Editor" : "Generate AI Clips"} <ArrowRight size={18} />
               </>
             )}
           </button>
@@ -956,7 +1046,9 @@ function NewProject() {
   );
 }
 function ProjectPage() {
+  const {confirmDelete, notify} = useDeleteNotice();
   const { id } = useParams();
+  const [connectionError, setConnectionError] = useState("");
   const navigate = useNavigate();
   const [deleting, setDeleting] = useState(false);
   const [p, setP] = useState<Project | null>(null),
@@ -966,10 +1058,10 @@ function ProjectPage() {
     const load = () =>
       api<Project>(`/projects/${id}`)
         .then((x) => {
-          if (active) setP(x);
+          if (active) { setP(x); setConnectionError(""); }
         })
         .catch((e) => {
-          if (active) setError(e.message);
+          if (active) setConnectionError(`Unable to refresh progress. Reconnecting automatically. ${e.message}`);
         });
     load();
     const timer = setInterval(load, 2500);
@@ -978,42 +1070,55 @@ function ProjectPage() {
       clearInterval(timer);
     };
   }, [id]);
-  if (!p) return <ErrorBox error={error || "Loading project…"} />;
+  useEffect(() => {
+    if (p?.status === "ready" && p.config?.workflow === "manual" && p.clips?.[0])
+      navigate(`/studio/clips/${p.clips[0].id}`, {replace: true});
+  }, [p, navigate]);
+  if (!p) return <ErrorBox error={connectionError || error || "Loading project…"} />;
   return (
     <>
+      <Link to="/studio" className="muted">← All projects</Link>
       <PageTitle
         eyebrow="PROJECT / HIGHLIGHTS"
         title={p.name}
         description={`${time(p.media.duration)} source · ${p.media.width || "—"} × ${p.media.height || "—"}`}
-        action={<div className="row"><Badge status={p.status} /><button
+        action={<div className="row">{["queued", "processing", "cancelling"].includes(p.status) ? <span className="processing-status" role="status"><LoaderCircle className="spin-slow" size={18}/>{p.status === "cancelling" ? "Cancelling…" : `${p.progress}% · ${p.stage}`}</span> : <Badge status={p.status} />}<button
           className="button secondary"
-          disabled={deleting || !["ready", "failed"].includes(p.status)}
-          title={!['ready', 'failed'].includes(p.status) ? "Wait for processing to finish before deleting" : "Delete project"}
+          disabled={deleting || p.status === "cancelling"}
+          title={!['ready', 'failed', 'cancelled'].includes(p.status) ? "Stop clipping at the next safe checkpoint" : "Delete project"}
           onClick={async () => {
-            if (!window.confirm(`Delete “${p.name}”? Its clips and exports will be permanently removed. This cannot be undone.`)) return;
+            if (["queued", "processing"].includes(p.status)) {
+              setDeleting(true);
+              try { setP(await api(`/projects/${p.id}/cancel`, {method: "POST"})); }
+              catch (e) { setError((e as Error).message); }
+              finally { setDeleting(false); }
+              return;
+            }
+            if (!await confirmDelete(p.name)) return;
             setDeleting(true);
             try {
               await api(`/projects/${p.id}`, {method: "DELETE"});
+                      notify(`“${p.name}” was removed from your workspace.`);
               navigate("/studio", {replace: true});
             } catch (e) { setError((e as Error).message); setDeleting(false); }
           }}
-        >{deleting ? "Deleting…" : "Delete project"}</button></div>}
+        >{deleting ? "Please wait…" : ["queued", "processing", "cancelling"].includes(p.status) ? "Cancel clipping" : "Delete project"}</button></div>}
       />
-      <ErrorBox error={error || p.error || ""} />
+      <ErrorBox error={error || connectionError || p.error || ""} />
       {p.status !== "ready" ? (
         <section className="panel processing">
           <div className="processing-icon">
-            {p.status === "failed" ? (
+            {["failed", "cancelled"].includes(p.status) ? (
               <RefreshCw size={32} />
             ) : (
               <Scissors className="spin-slow" size={32} />
             )}
           </div>
           <h2>
-            {p.status === "failed" ? "This needs another take." : p.stage}
+            {["failed", "cancelled"].includes(p.status) ? p.status === "cancelled" ? "Clipping cancelled" : "This needs another take." : p.stage}
           </h2>
           <p>
-            {p.status === "failed"
+            {["failed", "cancelled"].includes(p.status)
               ? "Your source is saved. Resolve the error, then try again."
               : "Long videos can take several minutes on this local CPU. You can leave this page; processing continues in the background."}
           </p>
@@ -1033,7 +1138,7 @@ function ProjectPage() {
               ),
             )}
           </div>
-          {p.status === "failed" && (
+          {["failed", "cancelled"].includes(p.status) && (
             <button
               className="button primary"
               onClick={async () => {
@@ -1143,45 +1248,7 @@ function ClipCard({ c, index }: { c: Clip; index: number }) {
     </article>
   );
 }
-function Captions() {
-  return (
-    <>
-      <PageTitle
-        eyebrow="MAKE IT SOUND LIKE YOU. LOOK LIKE YOU."
-        title="Words with personality."
-        description="Twenty starting points. Endless ways to make them yours in the clip editor."
-      />
-      <div className="preset-grid">
-        {presets.map((p, i) => (
-          <article className="preset-card" key={p.id}>
-            <div
-              className={`caption-example preset-${p.id}`}
-              style={{ fontFamily: p.style.font, color: p.style.color }}
-            >
-              <small>{String(i + 1).padStart(2, "0")} / CAPTION PRESET</small>
-              <div>
-                This is your
-                <br />
-                <em style={{ color: p.style.emphasis_color }}>moment.</em>
-              </div>
-              <span>9:16 · WORD-LEVEL CAPTIONS</span>
-            </div>
-            <h3>{p.name}</h3>
-            <p>{p.desc}</p>
-            <Link to="/studio" className="text-link">
-              Choose a clip to style <ArrowUpRight size={15} />
-            </Link>
-          </article>
-        ))}
-      </div>
-      <div className="notice">
-        Nineteen built-in font families are included in the media worker.
-        Caption styling is applied at export; the editor preview is an
-        approximation.
-      </div>
-    </>
-  );
-}
+function Captions() { return <CaptionGallery />; }
 function Headlines() {
   const { items, error } = useProjects();
   const [clips, setClips] = useState<Clip[]>([]),
@@ -1392,128 +1459,8 @@ function Headlines() {
     </div>
   );
 }
-function Brands() {
-  const [brands, setBrands] = useState<Brand[]>([]),
-    [error, setError] = useState("");
-  const load = () =>
-    api<Brand[]>("/brands")
-      .then(setBrands)
-      .catch((e) => setError(e.message));
-  useEffect(() => {
-    load();
-  }, []);
-  return (
-    <>
-      <PageTitle
-        eyebrow="CONSISTENTLY YOU"
-        title="Your brand, in every frame."
-        description="Save caption typography, colors, and export resolution for reuse."
-      />
-      <ErrorBox error={error} />
-      <form
-        className="panel"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const f = new FormData(e.currentTarget);
-          try {
-            await api("/brands", {
-              method: "POST",
-              body: json({
-                name: f.get("name"),
-                captions: {
-                  ...defaultCaption,
-                  font: f.get("font"),
-                  emphasis_color: f.get("color"),
-                  custom_font_id: f.get("custom_font_id") || null,
-                },
-                logo_asset_id: f.get("logo_asset_id") || null,
-                resolution: Number(f.get("resolution")),
-              }),
-            });
-            await load();
-          } catch (e) {
-            setError((e as Error).message);
-          }
-        }}
-      >
-        <div className="form-grid">
-          <label>
-            Kit name
-            <input
-              name="name"
-              required
-              placeholder="My signature style"
-              maxLength={100}
-            />
-          </label>
-          <label>
-            Font
-            <select name="font">
-              {[
-                "DejaVu Sans",
-                "Liberation Sans",
-                "Liberation Serif",
-                "Liberation Mono",
-              ].map((f) => (
-                <option key={f}>{f}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Accent
-            <input name="color" type="color" defaultValue="#4D8DFF" />
-          </label>
-          <label>
-            Export
-            <select name="resolution" defaultValue="1080">
-              <option value="1080">1080 × 1920 maximum</option>
-              <option value="720">720 × 1280 maximum</option>
-            </select>
-          </label>
-          <BrandAssetFields />
-        </div>
-        <button className="button primary">
-          <Plus size={16} />
-          Save brand kit
-        </button>
-      </form>
-      <div className="project-grid">
-        {brands.map((b) => (
-          <article className="panel brand-card" key={b.id}>
-            <span
-              className="brand-swatch"
-              style={{ background: b.config.captions.emphasis_color }}
-            >
-              Aa
-            </span>
-            <h3>{b.name}</h3>
-            <p>
-              {b.config.captions.font} · {b.config.resolution}p
-            </p>
-            <button
-              className="text-link"
-              onClick={async () => {
-                try {
-                  await api(`/brands/${b.id}`, { method: "DELETE" });
-                  load();
-                } catch (e) {
-                  setError((e as Error).message);
-                }
-              }}
-            >
-              Delete kit
-            </button>
-          </article>
-        ))}
-      </div>
-      <AssetUploader />
-      <p className="muted">
-        Apply a saved kit in the clip editor. Uploaded logos render in the top
-        right. Reload this page after uploading to add new assets to a kit.
-      </p>
-    </>
-  );
-}
+function Brands() { return <BrandWorkspace />; }
+
 function Exports() {
   const [items, setItems] = useState<ExportJob[]>([]),
     [error, setError] = useState("");
@@ -1580,14 +1527,18 @@ function Account() {
   return (
     <>
       <PageTitle
-        title="Your account."
-        description="The details behind your creative workspace."
+        title="Make the studio yours."
+        description="Manage your profile, appearance and creative defaults."
       />
-      <section className="panel narrow">
-        <h3>Appearance</h3>
+      <section className="panel narrow settings-section">
+        <h2>Appearance</h2>
         <p className="muted">Choose light, dark, or follow your device.</p>
-        <ThemeSelect />
+        <ThemeSelect onSave={async theme=>{
+          await api("/me/preferences",{method:"PUT",body:json({theme})});
+          await refresh();
+        }}/>
       </section>
+      <StudioPreferences key={user?.id} userId={user?.id} synced onSaved={refresh} />
       <form
         className="panel narrow"
         onSubmit={async (e) => {
@@ -1620,55 +1571,58 @@ function Account() {
         <button className="button primary">Save changes</button>
         <p role="status">{message}</p>
       </form>
-      <p className="muted">
-        Email changes, password reset, and account deletion are not available in
-        this local development release.
-      </p>
+      <AccountSecurity onDeleted={async ()=>{
+        if(user) window.localStorage.removeItem(`reclipd-defaults:${user.id}`);
+        window.sessionStorage.removeItem("reclipd-draft");
+        await refresh();
+      }}/>
     </>
   );
 }
 function Billing() {
-  const [usage, setUsage] = useState<{
-      used_seconds: number;
-      limit_seconds: number;
-    } | null>(null),
-    [error, setError] = useState("");
-  useEffect(() => {
-    api<typeof usage>("/usage")
-      .then(setUsage)
-      .catch((e) => setError(e.message));
-  }, []);
-  return (
-    <>
-      <PageTitle
-        eyebrow="SPACE TO EXPERIMENT"
-        title="Your plan & usage."
-        description="A development allowance for trying the full processing workflow."
-      />
-      <ErrorBox error={error} />
-      <section className="panel billing-panel">
-        <span className="eyebrow">DEVELOPMENT FREE</span>
-        <h2>Make your next idea happen.</h2>
-        <p>Local processing · All caption presets · Vertical MP4 exports</p>
-        <div className="usage-number">
-          {Math.ceil((usage?.used_seconds || 0) / 60)}{" "}
-          <span>/ {(usage?.limit_seconds || 7200) / 60} minutes</span>
-        </div>
-        <progress
-          max={usage?.limit_seconds || 7200}
-          value={usage?.used_seconds || 0}
-        />
-        <p className="muted">
-          Successful source processing counts once. Failed processing is
-          refunded. Editing and exports do not use processing minutes.
-        </p>
-        <div className="notice">
-          No payment details needed. Paid plans and payment-provider integration
-          are not enabled.
-        </div>
+  const [usage, setUsage] = useState<(CreditUsage & {limit_seconds:number|null;billing_enabled:boolean}) | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const load = () => {
+    setLoading(true); setError("");
+    api<NonNullable<typeof usage>>("/usage").then(setUsage).catch(e => setError(e.message)).finally(() => setLoading(false));
+  };
+  useEffect(()=>{load();const timer=setInterval(load,60000);return()=>clearInterval(timer);}, []);
+  const unlimited = usage?.limit_seconds === null;
+  const remaining = usage?.unlimited ? null : usage?.available_seconds ?? (usage?.limit_seconds == null ? null : Math.max(0, usage.limit_seconds - usage.used_seconds));
+  return <>
+    <PageTitle eyebrow="YOUR ACCOUNT" title="Plan & usage" description="Know your allowance, track processing, and stay in control."
+      action={<button className="button secondary" disabled={loading} onClick={load}><RefreshCw size={16}/> Refresh usage</button>}/>
+    <ErrorBox error={error}/>
+    {!usage ? <section className="panel" aria-busy={loading}>{loading ? "Loading your plan…" : "Usage is unavailable. Try refreshing."}</section> : <>
+      {typeof usage.trial_seconds === 'number' && <CreditOverview usage={usage}/>}
+      <div className="billing-overview">
+        <section className="panel billing-plan">
+          <span className="eyebrow">CURRENT PLAN</span><h2>{unlimited ? "Unlimited workspace" : usage.plan}</h2>
+          <p>{unlimited ? "Your account has no processing-minute cap." : "Your plan includes the full editing workflow. Paid minute packs are optional."}</p>
+          <div className="billing-price">No active subscription<span>No recurring charges configured</span></div>
+          <div className="billing-features"><span><Check size={16}/> AI clipping workflow</span><span><Check size={16}/> Caption styles and editor</span><span><Check size={16}/> MP4 exports</span></div>
+          <Link to="/studio/new" className="button primary">Create a project <ArrowRight size={16}/></Link>
+        </section>
+        <section className="panel billing-meter"><span className="eyebrow">PROCESSING ALLOWANCE</span>
+          <h2>{unlimited ? "Unlimited" : `${Math.floor((remaining || 0) / 60)} minutes left`}</h2>
+          <p>{Math.ceil(usage.used_seconds / 60)} minutes used{unlimited ? " · tracked for your records" : ` of ${usage.limit_seconds! / 60}`}</p>
+          {!unlimited && <progress aria-label="Processing allowance used" max={usage.limit_seconds || 1} value={Math.min(usage.used_seconds, usage.limit_seconds || 1)}/>}
+          {remaining === 0 && <p className="error">Allowance reached. Existing clips can still be edited and exported.</p>}
+          <p className="muted">Trial minutes expire after seven days. Free minutes refresh monthly without rollover; paid minutes expire 365 days after purchase.</p>
+          <Link to="/studio">View your projects <ArrowRight size={16}/></Link>
+        </section>
+      </div>
+      <div className="billing-overview">
+        <section className="panel"><h3>How usage is counted</h3><p>Source-video duration is reserved when processing starts, using trial, then monthly free, then earliest-expiring paid credits. Failed or cancelled processing returns minutes to their original buckets; expiry dates do not change. Deleting a completed project does not refund usage.</p><p>Editing, headline regeneration and exports do not use processing minutes. Upload-size, video-duration and concurrent-job limits still apply.</p></section>
+        <section className="panel"><h3>Payments & invoices</h3><p>Paystack test checkout supports one-time minute packs. Live payments, recurring subscriptions and tax invoices are not enabled.</p><Link to="/studio/settings">Account settings <ArrowRight size={16}/></Link><p className="muted">Test transactions are simulations, not receipts for real payments.</p></section>
+      </div>
+      <section className="panel" style={{padding:28,marginBottom:24}}><h3>Processing history</h3>
+      {!usage.processing_history?.length ? <p>No processing activity yet.</p> : usage.processing_history.map(r=><article key={r.project_id} style={{padding:'12px 0',borderBottom:'1px solid var(--border)'}}><strong>{r.name}</strong><p>{(r.seconds/60).toFixed(2)} minutes · {r.status} · {new Date(r.created_at).toLocaleString()}</p></article>)}
       </section>
-    </>
-  );
+      <Payments unlimited={unlimited} onVerified={load}/>
+    </>}
+  </>;
 }
 function Admin() {
   const [data, setData] = useState<{

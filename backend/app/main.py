@@ -24,6 +24,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from .config import settings
+from .billing import allowance
+from . import credits
 from .db import get_db
 from .models import User, Project, Clip, Export, BrandKit, Asset
 from .schemas import (
@@ -67,8 +69,8 @@ app.add_middleware(
 async def safety(request: Request, call_next):
     started = time.monotonic()
     if (
-        request.url.path in ("/api/projects/upload", "/api/assets")
-        and request.method == "POST"
+        (request.url.path in ("/api/projects/upload", "/api/assets") and request.method == "POST")
+        or (request.url.path.startswith("/api/uploads/") and request.method == "PUT")
     ):
         try:
             jwt.decode(
@@ -89,6 +91,7 @@ async def safety(request: Request, call_next):
         limit = (
             (settings().max_upload_mb + 1) * 1024 * 1024
             if request.url.path.endswith("upload")
+            else 9 * 1024 * 1024 if request.url.path.startswith("/api/uploads/")
             else 11 * 1024 * 1024
         )
         if int(raw_length) > limit:
@@ -179,6 +182,12 @@ def auth_rate_limit(request):
             r.expire(key, 120)
         if count > 20:
             raise HTTPException(429, "Too many requests. Try again in a minute.")
+        if request.url.path == "/api/auth/register":
+            daily = "signup:" + (request.client.host if request.client else "unknown") + ":" + str(int(time.time() // 86400))
+            attempts = r.incr(daily)
+            if attempts == 1: r.expire(daily, 172800)
+            if attempts > 10:
+                raise HTTPException(429, "Signup limit reached for this network. Please try again tomorrow.")
     except HTTPException:
         raise
     except Exception:
@@ -188,7 +197,7 @@ def auth_rate_limit(request):
 def session_response(response, user):
     response.set_cookie(
         "session",
-        token(user.id),
+        token(user.id, user.session_version),
         httponly=True,
         secure=settings().cookie_secure,
         samesite="lax",
@@ -204,14 +213,18 @@ def register(
 ):
     auth_rate_limit(request)
     user = User(
-        email=data.email, name=data.name, password_hash=passwords.hash(data.password)
+        email=data.email, name=data.name, password_hash=passwords.hash(data.password),
+        preferences={"onboarding_completed": False}
     )
+    user.credit_identity = credits.identity(data.email)
     db.add(user)
     try:
+        db.flush()
+        credits.sync(db,user)
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "An account with this email already exists")
+        raise HTTPException(409, "An account with this email or mailbox identity already exists")
     return session_response(response, user)
 
 
@@ -223,7 +236,7 @@ def login(
     user = db.scalar(select(User).where(User.email == data.email))
     # Verify a dummy hash as well to reduce account enumeration timing differences.
     valid = passwords.verify(data.password, user.password_hash if user else DUMMY_HASH)
-    if not user or not valid:
+    if not user or user.deleted or not valid:
         raise HTTPException(401, "Email or password is incorrect")
     return session_response(response, user)
 
@@ -251,14 +264,15 @@ def profile(
     return user
 
 
-@app.get("/api/usage", response_model=UsageOut)
-def usage(user: User = Depends(current_user)):
-    return {
-        "plan": "Development free",
-        "used_seconds": user.used_seconds,
-        "limit_seconds": settings().free_minutes * 60,
-        "billing_enabled": False,
-    }
+@app.get("/api/usage")
+def usage(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    result=credits.balance(db,user)
+    from .models import CreditReservation
+    history=list(db.scalars(select(CreditReservation).where(CreditReservation.user_id==user.id).order_by(CreditReservation.created_at.desc()).limit(50)))
+    result.update({"used_seconds":user.used_seconds,"limit_seconds":None if result['unlimited'] else user.used_seconds+result['available_seconds'],"billing_enabled":False,
+        "processing_history":[{"project_id":r.project_id,"name":r.name,"seconds":r.seconds,"status":r.status,"created_at":r.created_at} for r in history]})
+    db.commit()
+    return result
 
 
 @app.get("/api/projects", response_model=list[ProjectOut])
@@ -289,17 +303,17 @@ def project_out(p):
     }
 
 
-def admission(db, user):
+def admission(db, user, charge=True):
     # Lock user row so concurrent submissions cannot bypass active job limits.
     db.scalar(select(User).where(User.id == user.id).with_for_update())
     active = db.scalar(
         select(func.count())
         .select_from(Project)
-        .where(Project.user_id == user.id, Project.status.in_(["queued", "processing"]))
+        .where(Project.user_id == user.id, Project.status.in_(["queued", "processing", "cancelling"]))
     )
     if active >= 2:
         raise HTTPException(429, "You can process two projects at a time")
-    if user.used_seconds >= settings().free_minutes * 60:
+    if charge and user.id not in settings().unlimited_user_ids and user.used_seconds >= allowance(db, user):
         raise HTTPException(402, "Development processing allowance reached")
 
 
@@ -321,7 +335,7 @@ def upload(
     extension = Path(file.filename or "").suffix.lower()
     if extension not in {".mp4", ".mov", ".mkv", ".webm"}:
         raise HTTPException(415, "Use MP4, MOV, MKV or WebM")
-    admission(db, user)
+    admission(db, user, charge=cfg.workflow != "manual")
     project = Project(
         id=str(uuid.uuid4()),
         user_id=user.id,
@@ -413,6 +427,8 @@ def connect_source(
 def import_media(
     data: ImportIn, db: Session = Depends(get_db), user: User = Depends(current_user)
 ):
+    if data.config.workflow == "manual":
+        raise HTTPException(422, "Upload a source file to start a manual project")
     try:
         resolved = resolve_media(data.url, data.source_url, user.id, db)
     except (ValueError, OSError) as e:
@@ -448,10 +464,21 @@ def project(
     }
 
 
+@app.post("/api/projects/{project_id}/cancel", response_model=ProjectOut)
+def cancel_project(project_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    p = own_project(db, user, project_id)
+    if p.status not in {"queued", "processing", "cancelling"}:
+        raise HTTPException(409, "This project is no longer processing")
+    p.status = "cancelled" if p.status == "queued" else "cancelling"
+    p.stage = "Clipping cancelled" if p.status == "cancelled" else "Stopping at the next safe checkpoint"
+    db.commit()
+    return project_out(p)
+
+
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     p = own_project(db, user, project_id)
-    if p.status not in {"ready", "failed"}:
+    if p.status not in {"ready", "failed", "cancelled"}:
         raise HTTPException(409, "Wait for processing to finish before deleting this project")
     clips = list(db.scalars(select(Clip).where(Clip.project_id == p.id)))
     exports = list(db.scalars(select(Export).where(Export.clip_id.in_([c.id for c in clips]))))
@@ -484,9 +511,9 @@ def retry(
     project_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)
 ):
     p = own_project(db, user, project_id)
-    if p.status != "failed":
-        raise HTTPException(409, "Only failed projects can be retried")
-    admission(db, user)
+    if p.status not in {"failed", "cancelled"}:
+        raise HTTPException(409, "Only failed or cancelled projects can be retried")
+    admission(db, user, charge=p.config.get("workflow") != "manual")
     p.status = "queued"
     p.progress = 0
     p.error = None
@@ -517,6 +544,7 @@ def clip_preview(
     user: User = Depends(current_user),
 ):
     from .media import browser_preview, MediaError
+    from .processing_gate import processing_slot, ProcessingBusy
 
     c, p = own_clip(db, user, clip_id)
     if (
@@ -532,7 +560,7 @@ def clip_preview(
     key = hashlib.sha256(
         f"{p.source_key}:{start:.6f}:{end:.6f}:v1".encode()
     ).hexdigest()
-    output = storage.path(f"previews/{key}.mp4")
+    output = storage.path(f"previews/{user.id}/{key}.mp4")
     if not output.exists():
         if not _preview_slots.acquire(blocking=False):
             raise HTTPException(503, "Other previews are preparing. Try again shortly.")
@@ -547,10 +575,13 @@ def clip_preview(
                 if not output.exists():
                     temporary = output.with_suffix(".partial.mp4")
                     try:
-                        browser_preview(
-                            storage.path(p.source_key), temporary, start, end
-                        )
+                        with processing_slot(wait=False):
+                            browser_preview(
+                                storage.path(p.source_key), temporary, start, end
+                            )
                         temporary.replace(output)
+                    except ProcessingBusy as exc:
+                        raise HTTPException(503, str(exc))
                     except MediaError as exc:
                         raise HTTPException(422, str(exc))
                     finally:
@@ -628,6 +659,19 @@ def headlines(
     return c.headlines
 
 
+@app.post("/api/clips/{clip_id}/export-quote")
+def export_quote(clip_id: str, edits: EditDecision, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    c, p = own_clip(db, user, clip_id)
+    payload = credits.export_edits(db, user, edits)
+    reused = any(EditDecision.model_validate({**e.edits, "watermark": e.edits.get("watermark", False), "watermark_version": e.edits.get("watermark_version", 1)}).model_dump() == payload and (e.status != "complete" or
+        (e.output_key and storage.path(e.output_key).exists())) for e in db.scalars(
+        select(Export).where(Export.clip_id == c.id, Export.user_id == user.id,
+                            Export.status.in_(["queued", "processing", "complete"]))))
+    charged = p.config.get("workflow") == "manual" and not reused and user.id not in settings().unlimited_user_ids
+    return {"seconds": credits.export_seconds(payload) if charged else 0, "reused": reused,
+            "can_remove_watermark": credits.can_remove_watermark(db, user)}
+
+
 @app.post("/api/clips/{clip_id}/exports", status_code=201, response_model=ExportOut)
 def export(
     clip_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)
@@ -636,6 +680,15 @@ def export(
 
     c, p = own_clip(db, user, clip_id)
     db.scalar(select(User).where(User.id == user.id).with_for_update())
+    edits = credits.export_edits(db, user, c.edits)
+    # Project/user locks serialize reuse and reservation for concurrent requests.
+    for existing in db.scalars(select(Export).where(
+        Export.clip_id == c.id, Export.user_id == user.id,
+        Export.status.in_(["queued", "processing", "complete"])
+    ).order_by(Export.created_at.desc())):
+        if EditDecision.model_validate({**existing.edits, "watermark": existing.edits.get("watermark", False), "watermark_version": existing.edits.get("watermark_version", 1)}).model_dump() == edits and (existing.status != "complete" or
+                (existing.output_key and storage.path(existing.output_key).exists())):
+            return existing
     pending = db.scalar(
         select(func.count())
         .select_from(Export)
@@ -646,14 +699,22 @@ def export(
     e = Export(
         user_id=user.id,
         clip_id=c.id,
-        edits=EditDecision.model_validate(c.edits).model_dump(),
+        id=str(uuid.uuid4()),
+        edits=edits,
     )
     db.add(e)
+    if p.config.get("workflow") == "manual":
+        try:
+            credits.reserve(db, credits.export_account(db, e, "Manual export · " + p.name), credits.export_seconds(edits))
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(402, str(exc))
     db.commit()
     try:
         render_export.delay(e.id)
     except Exception:
         e.status = "failed"
+        credits.refund(db, credits.export_account(db, e))
         e.error = "Export queue unavailable. Start a new export when it is online."
         db.commit()
     return e
@@ -701,6 +762,18 @@ def brand(
         user_id=user.id, name=data.name, config=data.model_dump(exclude={"name"})
     )
     db.add(kit)
+    db.commit()
+    return kit
+
+
+@app.put("/api/brands/{kit_id}", response_model=BrandOut)
+def update_brand(kit_id: str, data: BrandIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    kit = db.scalar(select(BrandKit).where(BrandKit.id == kit_id, BrandKit.user_id == user.id).with_for_update())
+    if not kit:
+        raise HTTPException(404, "Brand kit not found")
+    validate_assets(db, user, data.captions.custom_font_id, data.logo_asset_id)
+    kit.name = data.name
+    kit.config = data.model_dump(exclude={"name"})
     db.commit()
     return kit
 
@@ -846,8 +919,8 @@ def admin_retry(
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "Project not found")
-    if p.status != "failed":
-        raise HTTPException(409, "Only failed projects can be retried")
+    if p.status not in {"failed", "cancelled"}:
+        raise HTTPException(409, "Only failed or cancelled projects can be retried")
     owner = db.get(User, p.user_id)
     admission(db, owner)
     p.status = "queued"
@@ -906,3 +979,15 @@ def builtin_font(font_slug: str):
     if not filename or not Path(filename).is_file():
         raise HTTPException(404, "Built-in font unavailable; use the Docker image")
     return FileResponse(filename, media_type="font/ttf")
+
+from .billing import router as billing_router
+app.include_router(billing_router)
+
+from .accounts import router as account_router
+app.include_router(account_router)
+
+from .paypal import router as paypal_router
+app.include_router(paypal_router)
+
+from .uploads import router as uploads_router
+app.include_router(uploads_router)

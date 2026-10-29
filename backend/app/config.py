@@ -13,7 +13,23 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     max_upload_mb: int = 2048
     max_media_seconds: int = 3600
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    app_url: str = "http://localhost:5173"
+    paypal_client_id: str = ""
+    paypal_client_secret: str = ""
+    paypal_merchant_id: str = ""
+    paypal_webhook_id: str = ""
+    paypal_sandbox_enabled: bool = False
+    paystack_secret_key: str = ""
+    billing_packs: list[dict] = []
+    billing_return_url: str = "http://localhost:5173/studio/billing"
     free_minutes: int = 120
+    unlimited_user_ids: list[str] = []
+    low_memory_mode: bool = False
     whisper_model: str = "base"
     whisper_beam_size: int = Field(default=1, ge=1, le=5)
     whisper_cpu_threads: int = Field(default=2, ge=1, le=32)
@@ -21,6 +37,10 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"
     import_allowed_hosts: list[str] = []
     youtube_api_key: str = ""
+    videoscale_enabled: bool = False
+    videoscale_auth_header: str = Field(default="", repr=False)
+    videoscale_budget_bytes: int = Field(default=0, ge=0)
+    videoscale_max_import_mb: int = Field(default=512, ge=1, le=2048)
     youtube_download_enabled: bool = False
     youtube_download_timeout: int = Field(default=600, ge=30, le=1800)
     llm_base_url: str = ""

@@ -40,7 +40,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     </ThemeContext.Provider>
   );
 }
-export function ThemeSelect() {
+export const useTheme = () => useContext(ThemeContext);
+export function ThemeSelect({onSave}: {onSave?: (theme:Theme)=>Promise<void>} = {}) {
+  const [error,setError]=useState("");
+  const [saving,setSaving]=useState(false);
   const { theme, setTheme } = useContext(ThemeContext);
   return (
     <label className="theme-control">
@@ -48,12 +51,20 @@ export function ThemeSelect() {
       <select
         aria-label="Appearance"
         value={theme}
-        onChange={(e) => setTheme(e.target.value as Theme)}
+        disabled={saving}
+        onChange={async (e) => {
+          const next=e.target.value as Theme;
+          setSaving(true); setError("");
+          try {if(onSave) await onSave(next); setTheme(next);}
+          catch(e){setError((e as Error).message);}
+          finally {setSaving(false);}
+        }}
       >
         <option value="light">Light</option>
         <option value="dark">Dark</option>
         <option value="system">System</option>
       </select>
+      {error && <span role="alert">{error}</span>}
     </label>
   );
 }

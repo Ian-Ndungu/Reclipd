@@ -98,7 +98,8 @@ def test_output_does_not_upscale_and_is_vertical():
 @pytest.mark.skipif(
     not shutil.which("ffmpeg"), reason="FFmpeg integration runs in Docker worker"
 )
-def test_real_ffmpeg_inspect_split_caption_render(tmp_path):
+@pytest.mark.parametrize("speed,transition", [(0.5,"none"), (1,"none"), (2,"none"), (2,"fade"), (1,"dissolve"), (1,"slideleft"), (1,"slideright"), (1,"wipeleft"), (1,"wiperight")])
+def test_real_ffmpeg_inspect_split_caption_render(tmp_path, speed, transition):
     source = tmp_path / "source.mp4"
     output = tmp_path / "final.mp4"
     run(
@@ -135,6 +136,11 @@ def test_real_ffmpeg_inspect_split_caption_render(tmp_path):
         show_headline=True,
         headline="Rendered headline",
         volume=0.25,
+        speed=speed,
+        transition=transition,
+        transition_duration=.3,
+        fade_in=.2,
+        fade_out=.2,
         captions=CaptionStyle(font="Inter", background=True, background_color="#112233", letter_spacing=2),
         words=[
             {"start": 0.1, "end": 0.8, "word": "RECLIPD"},
@@ -145,7 +151,7 @@ def test_real_ffmpeg_inspect_split_caption_render(tmp_path):
     render(source, output, edits, media, progress.append)
     info = probe(output)
     assert info["width"] / info["height"] == 9 / 16
-    assert abs(info["duration"] - 3) < 0.2
+    assert abs(info["duration"] - (3 if transition == "none" else 2.7) / speed) < 0.25
     assert progress[-1] == 98
     assert output.stat().st_size > 1000
 
@@ -249,3 +255,79 @@ def test_headlines_use_only_retained_speech(signed, db, monkeypatch):
     clip.edits = {'segments':[{'start':30,'end':40}], 'words':clip.edits['words']}
     db.commit()
     assert signed.post(f'/api/clips/{clip.id}/headlines', json={}).status_code == 422
+
+
+def test_headlines_have_generation_date_but_reject_invented_recency(monkeypatch):
+    import json
+    from datetime import datetime, timezone
+    from app.config import settings
+    from app.ranking import LocalLLM
+    monkeypatch.setattr(settings(), 'llm_base_url', 'http://local-model/v1')
+    prompts = []
+    def complete(self, prompt):
+        prompts.append(prompt)
+        return json.dumps(['Camera test today', 'Breaking camera news', 'Latest camera results'])
+    monkeypatch.setattr(LocalLLM, 'complete', complete)
+    result = generate_headlines('We tested the camera in heavy rain.', count=3)
+    assert datetime.now(timezone.utc).date().isoformat() in prompts[0]
+    assert 'NOT the recording or event date' in prompts[0]
+    assert all(h['source'] == 'deterministic transcript template' for h in result)
+    assert result[0]['text'] == 'We tested the camera in heavy rain.'
+
+
+def test_headlines_accept_specific_grounded_model_copy(monkeypatch):
+    import json
+    from app.config import settings
+    from app.ranking import LocalLLM
+    monkeypatch.setattr(settings(), 'llm_base_url', 'http://local-model/v1')
+    titles = ['Testing a camera in heavy rain', 'The microphone stopped recording', 'Rain test: camera versus microphone']
+    monkeypatch.setattr(LocalLLM, 'complete', lambda self, prompt: json.dumps(titles))
+    result = generate_headlines('We tested the camera in heavy rain. The microphone stopped recording.', count=3)
+    assert [h['text'] for h in result] == titles
+
+
+def test_picture_adjustments_validation_and_filters():
+    from app.media import adjustment_filter
+    from pydantic import ValidationError
+    assert adjustment_filter({}) == ''
+    edits = EditDecision(segments=[{'start': 0, 'end': 5}], brightness=1.1, contrast=1.2, saturation=0, flip_horizontal=True)
+    filters = adjustment_filter(edits.model_dump())
+    assert 'hflip' in filters
+    assert 'rr=1.1' in filters
+    assert 'contrast=1.2:saturation=0.0' in filters
+    for key, value in [('brightness', 3), ('contrast', -1), ('saturation', 4)]:
+        with pytest.raises(ValidationError):
+            EditDecision(segments=[{'start': 0, 'end': 5}], **{key: value})
+
+
+def test_speed_limits_and_audio_tempo():
+    from app.media import tempo_filter
+    from pydantic import ValidationError
+    assert tempo_filter(.25) == 'atempo=0.5,atempo=0.5'
+    assert tempo_filter(4) == 'atempo=2,atempo=2.0'
+    for key, value in [('speed', 0), ('speed', 5), ('fade_in', -1), ('fade_out', 3)]:
+        with pytest.raises(ValidationError):
+            EditDecision(segments=[{'start': 0, 'end': 5}], **{key: value})
+
+
+def test_transition_timing_matches_captions_and_billing():
+    from app.edit_timing import transition_overlap, timeline_seconds
+    from app.credits import export_seconds
+    edits = EditDecision(segments=[{'start':0,'end':1},{'start':5,'end':8}], transition='fade',transition_duration=1,speed=2).model_dump()
+    assert transition_overlap(edits)==.5
+    assert timeline_seconds(edits)==3.5
+    assert export_seconds(edits)==1.75
+    words=retime_words([{'start':5,'end':6,'word':'Next'}], edits['segments'],transition_overlap(edits))
+    assert words[0]['start']==.5
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg integration runs in Docker worker')
+def test_transitions_with_three_cuts_and_silent_source(tmp_path):
+    source=tmp_path/'silent.mp4';output=tmp_path/'export.mp4'
+    run(['ffmpeg','-v','error','-y','-f','lavfi','-i','testsrc2=size=320x180:rate=24','-t','4','-c:v','libx264',str(source)])
+    media=probe(source)
+    edits=EditDecision(segments=[{'start':0,'end':1},{'start':1,'end':2},{'start':2,'end':4}], reframe='fit',transition='fade',transition_duration=.3,captions=CaptionStyle(enabled=False)).model_dump()
+    render(source,output,edits,media,lambda _:None)
+    result=probe(output)
+    assert not result['has_audio']
+    assert abs(result['duration']-3.4)<.2

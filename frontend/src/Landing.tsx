@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpRight,
@@ -21,6 +21,10 @@ import { presets, defaultCaption } from "./types";
 export function PremiumLanding() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [showHandoff, setShowHandoff] = useState(false);
+  const handoff = useRef<HTMLHeadingElement>(null);
+  const linkInput = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (showHandoff) handoff.current?.focus(); }, [showHandoff]);
   const [url, setUrl] = useState("");
   const [preset, setPreset] = useState(0);
   const [after, setAfter] = useState(true);
@@ -88,11 +92,27 @@ export function PremiumLanding() {
           <a href="#features">Features</a>
           <a href="#how">How it works</a>
           <a href="#pricing">Pricing</a>
-          <Link to="/auth">Login</Link>
+          {!user && <Link to="/auth">Login</Link>}
         </nav>
-        <Link className="button primary" to="/new">
-          Get started <ArrowUpRight size={15} />
-        </Link>
+        {user ? (
+          <details className="landing-account">
+            <summary>
+              <span className="avatar" aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span>
+              Your studio <ArrowUpRight size={15} />
+            </summary>
+            <div className="landing-account-panel">
+              <span className="eyebrow">Welcome back</span>
+              <strong>{user.name}</strong>
+              <p>You’re signed in. Pick up where you left off or start a new project.</p>
+              <Link className="button primary" to="/studio">Continue to studio <ArrowRight size={16} /></Link>
+              <Link className="button" to="/studio/new">Create a new project</Link>
+            </div>
+          </details>
+        ) : (
+          <Link className="button primary" to="/new">
+            Get started <ArrowUpRight size={15} />
+          </Link>
+        )}
       </header>
       <main id="main-content">
         <section className="premium-hero">
@@ -112,24 +132,38 @@ export function PremiumLanding() {
             onSubmit={(e) => {
               e.preventDefault();
               saveDraft({ url, mode: "link" });
-              navigate(user ? "/studio/new" : "/auth");
+              if (user) navigate("/studio/new");
+              else setShowHandoff(true);
             }}
           >
             <label className="sr-only" htmlFor="hero-link">
               Video link
             </label>
             <input
+              ref={linkInput}
               id="hero-link"
               type="url"
               required
               placeholder="Paste a video link here…"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => {setUrl(e.target.value); setShowHandoff(false);}}
             />
             <button className="button primary">
               Generate AI Clips <ArrowRight size={16} />
             </button>
           </form>
+          {showHandoff && !user && (
+            <section className="clip-signin-handoff" aria-labelledby="clip-signin-title">
+              <span className="eyebrow">Your next step</span>
+              <h2 id="clip-signin-title" ref={handoff} tabIndex={-1}>Let’s give your clips a home.</h2>
+              <p>Sign in or create an account to save your projects and clips. We’ll keep your video link ready so you can review your settings before processing starts.</p>
+              <div className="handoff-actions">
+                <Link className="button primary" to="/auth?mode=register">Create an account <ArrowRight size={16} /></Link>
+                <Link className="button secondary" to="/auth">Sign in to continue</Link>
+              </div>
+              <button className="text-link" onClick={() => {setShowHandoff(false); linkInput.current?.focus();}}>Back to my video link</button>
+            </section>
+          )}
           <button
             className="text-link upload-link"
             onClick={() => {
@@ -314,11 +348,11 @@ export function PremiumLanding() {
             <p>Local development access. No payment credentials required.</p>
           </div>
           <article className="pricing-card">
-            <span>Development plan</span>
+            <span>Trial + Free Forever</span>
             <h3>
               Free <small>/ local workspace</small>
             </h3>
-            <p>120 processing minutes per account.</p>
+            <p>90 free minutes for 7 days, then 60 free minutes every month. No card required.</p>
             <ul>
               {[
                 "Your own clipping engine",
@@ -336,7 +370,7 @@ export function PremiumLanding() {
               Create your first clip <ArrowRight size={15} />
             </Link>
             <small>
-              Lifetime development allowance; paid plans are not enabled.
+              Trial and free minutes do not roll over. Paid checkout is not yet available.
             </small>
           </article>
         </section>
@@ -347,10 +381,6 @@ export function PremiumLanding() {
             [
               "Can I paste any YouTube link?",
               "When enabled, public YouTube retrieval can be attempted for videos you own or have permission to use. Restricted or blocked videos require an authorized original.",
-            ],
-            [
-              "Does RECLIPD use OpusClip?",
-              "No. RECLIPD uses its own FFmpeg, Whisper and highlight-ranking pipeline.",
             ],
             [
               "How long does processing take?",

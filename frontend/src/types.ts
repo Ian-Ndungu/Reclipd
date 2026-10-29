@@ -4,6 +4,7 @@ export type User = {
   email: string;
   is_admin: boolean;
   used_seconds: number;
+  preferences?: {onboarding_completed?: boolean; caption_preset?: string; resolution?: 720 | 1080; theme?: "light" | "dark" | "system"};
 };
 export type Word = { start: number; end: number; word: string };
 export type CaptionStyle = {
@@ -72,7 +73,17 @@ export type Edits = {
   resolution: 720 | 1080;
   headline: string;
   show_headline?: boolean;
+  watermark?: boolean;
   volume?: number;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  flip_horizontal?: boolean;
+  speed?: number;
+  fade_in?: number;
+  fade_out?: number;
+  transition?: "none" | "fade" | "dissolve" | "slideleft" | "slideright" | "wipeleft" | "wiperight";
+  transition_duration?: number;
   brand_kit_id?: string | null;
   logo_asset_id?: string | null;
 };
@@ -98,7 +109,7 @@ export type Project = {
   error: string | null;
   created_at: string;
   media: { duration?: number; width?: number; height?: number };
-  config: { clip_count: number };
+  config: { clip_count: number; workflow?: "ai" | "manual" };
   analysis: { warnings?: string[]; ranking_method?: string };
   clips?: Clip[];
   transcript?: Word[];
@@ -185,7 +196,7 @@ export const presets: {
     id: "boxed",
     name: "In the frame",
     desc: "High contrast. Every background.",
-    style: { size: 54, stroke: 3, shadow: 0, emphasis_color: "#8CB9FF" },
+    style: { size: 54, stroke: 0, shadow: 0, emphasis_color: "#8CB9FF", background: true, background_color: "#111827" },
   },
 ];
 

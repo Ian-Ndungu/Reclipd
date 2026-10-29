@@ -6,6 +6,7 @@ import jwt
 from pwdlib import PasswordHash
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 from .config import settings
 from .db import get_db
 from .models import User
@@ -13,9 +14,9 @@ from .models import User
 passwords = PasswordHash.recommended()
 
 
-def token(user_id: str):
+def token(user_id: str, version: int = 0):
     return jwt.encode(
-        {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(hours=12)},
+        {"sub": user_id, "version": version, "exp": datetime.now(timezone.utc) + timedelta(hours=12)},
         settings().secret_key,
         algorithm="HS256",
     )
@@ -25,8 +26,11 @@ def current_user(request: Request, db: Session = Depends(get_db)):
     raw = request.cookies.get("session", "")
     try:
         payload = jwt.decode(raw, settings().secret_key, algorithms=["HS256"])
-        user = db.get(User, payload["sub"])
-        if not user:
+        query=select(User).where(User.id==payload["sub"]).execution_options(populate_existing=True)
+        if request.method not in {"GET","HEAD","OPTIONS"}:
+            query=query.with_for_update()
+        user=db.scalar(query)
+        if not user or user.deleted or payload.get("version", 0) != user.session_version:
             raise ValueError()
         return user
     except (jwt.PyJWTError, KeyError, ValueError):

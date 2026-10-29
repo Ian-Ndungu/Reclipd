@@ -54,7 +54,7 @@ def metadata(video_id: str) -> dict:
         with httpx.Client(timeout=12, follow_redirects=False) as client:
             response = client.get(
                 "https://www.googleapis.com/youtube/v3/videos",
-                params={"part": "snippet,contentDetails", "id": video_id},
+                params={"part": "snippet,contentDetails,status", "id": video_id},
                 headers={"X-Goog-Api-Key": settings().youtube_api_key},
             )
         if response.status_code != 200:
@@ -84,6 +84,10 @@ def metadata(video_id: str) -> dict:
         if thumbnail and urlsplit(thumbnail).hostname != "i.ytimg.com":
             thumbnail = None
         return {
+            "public_unrestricted": (item.get("status", {}).get("privacyStatus") == "public"
+                and snippet.get("liveBroadcastContent", "none") == "none"
+                and not item.get("contentDetails", {}).get("contentRating")
+                and not item.get("contentDetails", {}).get("regionRestriction")),
             "title": snippet["title"],
             "channel": snippet["channelTitle"],
             "thumbnail": thumbnail,
@@ -207,6 +211,6 @@ def resolve_media(url, source_url, user_id, db):
                 if result.url:
                     validate_url(result.url)
                 return result
-    if video and not source_url and settings().youtube_download_enabled:
+    if video and not source_url and (settings().youtube_download_enabled or settings().videoscale_enabled):
         return RetrievedSource(url=f"https://www.youtube.com/watch?v={video}", provider="youtube-public")
     return RetrievedSource(url=resolve_source(url, source_url))

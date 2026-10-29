@@ -5,6 +5,8 @@ os.environ["SECRET_KEY"] = "test-only-secret-key-at-least-32-characters"
 os.environ["YOUTUBE_DOWNLOAD_ENABLED"] = "false"
 os.environ["YOUTUBE_API_KEY"] = ""
 os.environ["DATABASE_URL"] = "sqlite://"
+# TestClient uses HTTP; never inherit production HTTPS-only cookies.
+os.environ["COOKIE_SECURE"] = "false"
 os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="reclipd-test-")
 import pytest
 from sqlalchemy import create_engine

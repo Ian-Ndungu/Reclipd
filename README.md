@@ -177,3 +177,188 @@ Downloads run in a separate process group with a configurable timeout (default 6
 The headline workspace offers editable drafts, 3–10 options, 60/90/140-character limits, retained-transcript review, and explicit copy/overlay feedback. Generation excludes words outside retained edits. Without a model, suggestions are labeled transcript templates; these now vary source sentences and respect the length limit.
 
 For semantic rewriting, configure the existing trusted local OpenAI-compatible service via `LLM_BASE_URL`, `LLM_MODEL`, and optional `LLM_API_KEY` in backend `.env`, then recreate API and worker. The endpoint must support `/chat/completions`; the base URL normally includes `/v1`. No model is provisioned automatically. Prompts ask for distinct, specific, modest angles with no invented outcomes. Duplicate, overlong or novel-numeric model responses fall back to templates. These checks do not prove factual accuracy: correct transcription errors, retain a self-contained clip, and review names, claims and context before publishing. Model requests send the retained transcript to the configured service.
+
+## Paystack sandbox billing
+
+The billing page supports one-time KES minute packs, hosted Paystack checkout,
+owner-scoped verification and payment history. This version accepts `sk_test_`
+keys only; it cannot charge real money. Test credits increase the development
+allowance without changing the account's unlimited exemption.
+
+Set `PAYSTACK_SECRET_KEY` privately in `.env`, `BILLING_PACKS` to a JSON array of
+objects with `id`, `name`, positive integer `amount_kes` and `minutes`, and
+`BILLING_RETURN_URL` to your frontend `/studio/billing` URL. No prices are enabled
+by default. Recreate API/worker services after changing environment settings.
+Never commit the secret or add it to a VITE variable.
+
+Configure Paystack's test webhook as `https://YOUR_API_HOST/api/billing/webhook`.
+It requires public HTTPS; localhost cannot receive provider webhooks. The return
+page and payment-history Check payment action can verify from a local session.
+Both paths recheck Paystack's transaction status, reference, amount, currency,
+test domain and purchaser email. Only a confirmed success grants minutes, once.
+Webhook signatures use HMAC-SHA512 of the raw body. Amounts are sent in KES subunits.
+
+Not enabled: live charging, recurring subscriptions, automatic refunds/dispute
+reconciliation, tax invoices and a live/test ledger migration. Those must be
+implemented before accepting live payments. A test payment is not a tax receipt.
+
+## Credit policy (supersedes development allowance / configurable KES packs)
+
+- Activation is successful account registration (`users.created_at`, UTC). Eligible
+  accounts receive 90 minutes until activation + 7 days, without a card.
+- After that instant, Free Forever grants 60 minutes for each monthly anniversary
+  of trial expiry. Month-end dates clamp to that month's last day (Jan 31 → Feb 28
+  → Mar 31). Expired/missed periods never accumulate. Grants are materialized on
+  the next usage/admission/reservation request, so no scheduler delay affects eligibility.
+- Fixed advertised USD packs: Starter $10/100 min; Creator $20/250 min, with 50 extra
+  minutes on each of the first two successful Creator purchases; Pro $40/600 min;
+  Studio $80/1500 min. Purchase grants expire exactly 365 days from provider payment time.
+- Checkout is hard-disabled until merchant currency capability and end-to-end payment
+  integration have been verified. BILLING_PACKS and FREE_MINUTES no longer determine
+  the new credit policy. Existing pending KES payments retain their original currency.
+- Account row locks serialize grants and spending; stable grant keys prevent duplicate
+  trial/monthly/payment allocations. Reservations are keyed by project and charge source
+  duration rounded up to a millisecond. Order: trial, free, paid by nearest expiry.
+  Refunds restore original grants without changing their expiry. Paid ledger entries
+  and processing history survive project deletion. Unlimited account exemptions persist.
+- Existing accounts retain their original activation date. On first ledger access,
+  historical tracked usage is deducted once from the current free/trial bucket and then
+  legacy successful purchases. Future monthly allocations start fresh. Existing test
+  purchases remain test credits; this is not a live-payment migration.
+- Anti-abuse: normalized unique account emails, hashed canonical Gmail/Googlemail
+  identities (dots/+aliases), one identity entitlement, existing authentication rate
+  limits and 10 signup attempts per observed network per UTC day, failing closed if
+  Redis is unavailable. Reverse-proxy client IP handling must be configured for a
+  public deployment; behind an untrusted proxy the limit is shared by proxy traffic.
+  Email ownership verification, disposable-address detection, and person-level identity
+  checks are not implemented; these controls do not claim to prevent all multi-account abuse.
+
+### Editorial briefs and picture adjustments
+Clipping instructions now prioritize literal transcript topic coverage (60% of heuristic score), support explicit `01:00–05:00` source ranges, and exclude topics with `Avoid sponsorships.` Keep exclusion sentences separate from positive requests. Without a configured LLM, this is lexical matching, not general natural-language understanding. The optional LLM receives full candidate transcripts for instruction-aware reranking. Impossible constraints produce recoverable errors. Clip count, duration, captions and language remain controlled by structured settings.
+
+The editor's Frame panel includes brightness, contrast, saturation, Natural/Vivid/Soft/Black & white presets, horizontal mirroring and mute. Picture edits are saved non-destructively, support existing undo/redo, and apply to every cut during FFmpeg export before captions and logos. Browser color previews approximate FFmpeg output. Multi-track overlays, transitions, keyframes, music uploads and speed ramps are not implemented.
+
+Speed & fades: the editor Frame panel supports global 0.25×–4× playback/export speed with pitch-preserving audio. Captions are burned before time scaling so their timing follows the footage. Transport displays finished playback time while trimming/splitting uses source timestamps. Fade in/out (0–2 seconds each, capped at half the output duration) apply to video, overlays and audio during export; browser preview does not yet simulate fades. These controls use existing save and undo/redo.
+
+### Manual editing and shared credits
+Before upload, choose AI Clips or Manual Editor. Manual Editor uploads an authorized file and creates a ready-to-edit clip after FFprobe inspection, without transcription or AI ranking and without charging source minutes. The first selection contains up to 180 seconds; trim controls can select other parts of the original. Automatic captions are not generated; use Add caption at playhead and edit its text/timing.
+
+Both workflows share the existing trial, monthly free and prepaid balance. AI jobs still charge source duration. Manual exports reserve finished duration (selected seconds divided by playback speed), rounded up to the millisecond. Preview/edit time is free. Identical queued, processing or completed exports with retained files are reused without a second charge; changed edits create a new charge. Queue failures, rendering failures and stale jobs refund the original grant allocations. Downloads do not charge. Existing unlimited accounts remain exempt. The export button fetches the cost before enabling export. Credit history labels manual reservations as Manual export.
+
+This is a single-source vertical editor, not full CapCut parity: multi-track compositing and automated manual-project transcription remain unavailable. Existing 180-second selected-source export and preview limits still apply (speed can change the final duration).
+
+
+Between-cut transitions: Crossfade, Dissolve, Slide left/right, and Wipe left/right apply to every adjacent cut at export, with audio crossfades. Transition length (0.1–1 seconds) is capped at half the shortest cut. Caption offsets and manual-export credits subtract overlap before applying playback speed. Browser editing previews currently show hard cuts; render an export to view transitions. This is a global transition, not independently configured per boundary.
+
+### Automatic face tracking
+Auto reframing samples at 4 Hz from the exact trim start, with frontal and mirrored profile Haar detections at 640px width and local contrast normalization. Geometry-based association keeps the same nearby subject instead of always selecting the largest face. A dead zone and time-based smoothing reduce jitter; brief missed detections hold the previous subject before reacquisition or gradual fallback. Large scene changes reset association. Paths are simplified to at most 256 points and compiled as balanced FFmpeg expressions to avoid parser depth failures.
+
+This is not face recognition or active-speaker detection. Haar detection can still miss tiny, occluded, strongly angled or poorly lit faces; geometry association can switch between overlapping people. The editor preview is approximate, and exports apply the tracking. Manual crop and Fit entire frame remain available. Automated tests check tracking continuity and crop rendering; no representative real-footage accuracy percentage has been established.
+
+### Caption studio, brand library, and settings
+Caption Studio supports searching by style/font, filtering background or animated presets, custom preview text, and carrying a chosen preset into the next AI project. Previews approximate export typography; animations require timed captions in the actual clip.
+
+Brand Library supports creating and editing owned kits, all built-in fonts, size/color/placement controls, export resolution, logo/custom-font selections and a live typography preview. Asset uploads refresh the selectors. Deletion requires an inline confirmation; existing clips retain their saved edits when a kit changes or is deleted. PUT /api/brands/{id} enforces ownership and asset access validation.
+
+Settings saves account-scoped, browser-local defaults for caption presets and export resolution. New projects copy the defaults; existing projects and explicit drafts are unchanged. Manual projects continue to start with captions off. These preferences do not sync across devices. Theme selection remains in Settings.
+
+### RECLIPD export watermark
+New exports include a white vector scissors icon that accelerates across the top-left safe area with dissipating smoke, revealing the RECLIPD wordmark before settling. Clips over 15 seconds replay this two-second sequence once at the midpoint, applied after captions, logos and fades. Trial and Free Forever accounts cannot disable it; the API enforces this independently of the editor checkbox. A verified successful prepaid purchase unlocks removal for 365 days from payment (independent of remaining minutes); configured unlimited accounts also qualify. Paid users can untick **Include RECLIPD watermark** in the editor before exporting. Existing downloaded files are unchanged; legacy exports without a recorded watermark are not reused for a newly watermarked export.
+
+### Export clarity
+Exports use H.264 CRF 17 with the medium encoder preset, Lanczos video resizing, and 192 kbps AAC when audio is encoded. This prioritizes detail over file size and rendering speed. Browser previews remain lightweight. Export resolution remains source-limited, up to 1080×1920 for suitable footage; landscape crops may be smaller. New export requests use the updated render version instead of reusing older outputs.
+
+### Account settings and password recovery
+- Settings now supports password changes, synced caption/resolution/theme preferences, and password-confirmed account deletion.
+- Preferences are stored on the account and loaded on sign-in/page reload. Existing browser defaults are migrated on first use when the account has no preferences.
+- Password changes and resets revoke other sessions. Reset links are random, hashed in the database, valid for 30 minutes and single-use; reset secrets are in URL fragments, not server request logs.
+- Deletion removes projects, clips, assets, preferences and credit history; active processing/exports must finish or be cancelled first. The account becomes an inaccessible anonymous tombstone to retain payment reconciliation records and prevent repeat free trials. Physical file failures are retried by cleanup. Old preview caches expire after seven days; backups have their own retention.
+- Recovery email requires SMTP. For local Gmail development, enable Google 2-Step Verification and create an App Password, then run:
+  `python3 scripts/configure_gmail.py`
+  The hidden prompt writes only to ignored local `.env`. Never use the normal Google password.
+- Restart the API with `docker compose up -d --force-recreate api`, then use **Forgot password?** on the login page to test delivery. Without SMTP configuration the app explicitly reports recovery unavailable.
+- Development links use `APP_URL=http://localhost:5173` and work on the computer hosting the app. Set the public HTTPS origin for deployment. Gmail can support a small production launch, subject to Google sending limits and account restrictions; a verified transactional sender is recommended for reliability at scale.
+- PayPal is not integrated/enabled by these account changes. Existing paid checkout remains disabled pending verified payment integration.
+
+### PayPal sandbox setup (Personal account → Business checkout)
+PayPal website checkout needs a Business merchant account. Upgrade the existing Personal account through PayPal's account settings if offered, or create a separate Kenyan Business account. Complete PayPal's verification using accurate business details. A sandbox Business seller and sandbox Personal buyer let you test without moving real money.
+
+1. Sign in at https://developer.paypal.com/dashboard/ and select Sandbox.
+2. Create a REST app under Apps & Credentials for the sandbox Business seller.
+3. Get the sandbox Client ID, Secret and seller Merchant ID. Run `python3 scripts/configure_paypal.py` to save credentials privately in ignored `.env`.
+4. Restart the API: `docker compose up -d --force-recreate api`.
+5. Use a regular RECLIPD test account (not an unlimited account), open Billing, choose a package and approve with the separate sandbox buyer.
+6. For asynchronous verification, configure the app's webhook at your public HTTPS endpoint `/api/billing/paypal/webhook`, subscribe to PAYMENT.CAPTURE.COMPLETED, PAYMENT.CAPTURE.REFUNDED and PAYMENT.CAPTURE.REVERSED, and save its ID as PAYPAL_WEBHOOK_ID. Localhost cannot receive PayPal webhooks; the return flow and Check payment action can verify local tests.
+
+Implementation uses server-owned USD prices, PayPal Orders v2 create/capture, stable request IDs, owned payment references, merchant/amount/currency/capture validation, and signature verification through PayPal. Duplicate capture callbacks/webhooks do not grant additional credits. Refund/reversal events revoke the package's unspent credits (conservatively, the whole remaining package even for partial refunds); already-consumed work is not made negative. Paystack records remain available. Test credits use the existing local ledger and must not be treated as real-money purchases.
+
+Live API endpoints are deliberately unavailable in this implementation. Before enabling real payments: complete Business account eligibility, run real sandbox success/cancellation/decline/retry/webhook/refund tests, use a public HTTPS deployment, and establish refund/dispute operations. No external sandbox payment has been verified until credentials are configured.
+
+### First production launch with Gmail
+Account deletion, password change/recovery and synced preferences are not development-only features; they are included in the production build. Apply all database migrations when deploying.
+Set APP_URL to the public HTTPS frontend origin, COOKIE_SECURE=true and CORS_ORIGINS to that origin on the server. Configure SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, SMTP_USERNAME, SMTP_FROM and SMTP_PASSWORD using a Google App Password. Keep credentials in server environment variables.
+Gmail is acceptable for an initial small launch subject to its sending limits; the application does not prohibit production Gmail. The local configure_gmail.py helper sets APP_URL to localhost, so set the public URL separately in production. Recovery cannot send until credentials are configured.
+
+### Experimental Micro test profile
+
+`docker compose -f compose.yaml -f compose.micro.yaml up -d --build` enables
+low-memory operation. This is **not a production certification for 1 GB servers**.
+Use a host with configured swap; the worker allows up to 3 GB RAM+swap, but other
+services and the OS also need memory. Keep exactly one worker replica. Model,
+beam size, output resolution and encoding quality are unchanged. Heavy jobs and
+uncached previews share a filesystem lock on the media volume; busy previews
+return a retryable error. Worker children are replaced after each task, Whisper
+is released after transcription, and FFmpeg/BLAS thread counts are limited.
+Cached previews and existing exports remain reusable; no new cross-project
+transcription cache has been implemented. Existing duration/time limits remain.
+
+Before public use, test a short authorized upload, transcription, editing,
+export, download, concurrent submissions, failure refunds, and recovery on the
+actual server. Measure peak memory, swap use, disk space and job duration.
+Do not enable live checkout for this experiment. Public HTTPS, secure cookies,
+strong server-specific secrets, firewall configuration and backups still need
+setup. This overlay does not expose the localhost-only web/API ports publicly.
+
+### Single-server HTTPS test deployment
+
+The optional `compose.public.yaml` adds Caddy on ports 80/443, with certificates
+and state in named volumes. Set `PUBLIC_HOST` in the server-only `.env`, plus
+matching HTTPS `APP_URL`, `BILLING_RETURN_URL`, `CORS_ORIGINS`, and
+`COOKIE_SECURE=true`. Generate new server session/database secrets. Do not copy
+local user databases or credentials by default. Open TCP 80/443 in the cloud
+security list and host firewall, retaining SSH access. Database and Redis have
+no public ports; web/API direct ports stay loopback-only.
+
+Use all three files consistently:
+`docker compose -f compose.yaml -f compose.micro.yaml -f compose.public.yaml up -d --build`.
+Keep checkout disabled during performance testing. A free IP-based hostname
+can support a temporary trial but depends on the DNS provider and stable IP.
+The overlay does not itself configure backups or guarantee Micro performance.
+
+When transferring source from macOS, use `COPYFILE_DISABLE=1 tar ...` and
+exclude `._*` files. These AppleDouble metadata files are not Python source;
+if included beside Alembic migrations they can prevent API startup. Both Docker
+build contexts also exclude these sidecars and `.DS_Store`.
+
+### Optional VideoScale cloud retrieval
+Run `python3 scripts/configure_videoscale.py` to save Basic Auth privately. Enable
+`VIDEOSCALE_ENABLED=true` only on the worker/API deployment after configuring
+`VIDEOSCALE_BUDGET_BYTES` within your remaining provider allowance. The default is
+zero (fail closed). No automatic purchases, top-ups, or budget resets are performed.
+Provider billing must also have auto-top-up disabled in its dashboard; the local
+budget cannot observe other applications using the same account.
+
+The adapter checks public/unrestricted metadata using the YouTube API, selects
+H.264 video up to 1080p plus AAC audio, and merges without re-encoding. It rejects
+oversized imports instead of silently lowering resolution. Downloads are bounded
+by `VIDEOSCALE_MAX_IMPORT_MB` (512 by default), duration limits, and timeouts.
+The persistent `.videoscale-budget.sqlite` in media storage reserves 125% of the
+provider's estimated file sizes before tasks start, including failed attempts.
+Preserve this file across deployments. It is a conservative app allowance, not a
+live provider balance. A timed-out provider task may finish remotely; retries
+reserve additional allowance. The adapter never forwards Basic Auth to storage.
+
+Current verified storage destination is `s3.fr-par.scw.cloud` over HTTPS. A provider
+host change fails closed and requires review. Uploads and connected originals
+continue through their existing workflow. VideoScale is a third-party retrieval
+service; configuration does not establish ownership or authorization for footage.

@@ -1,4 +1,6 @@
 export type ProjectDraft = {
+  resolution?: 720 | 1080;
+  workflow?: "ai" | "manual";
   content_category?: string;
   instructions?: string;
   caption_preset?: string;

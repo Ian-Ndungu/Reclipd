@@ -6,6 +6,8 @@ import tempfile
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select, update
+from . import credits
+from .processing_gate import serial_processing
 from .config import settings
 from .db import SessionLocal
 from .models import Project, User, Clip, Export, Asset
@@ -46,23 +48,15 @@ celery.conf.update(
 
 
 def reserve_quota(db, p, duration):
-    if p.quota_reserved:
-        return
-    user = db.scalar(select(User).where(User.id == p.user_id).with_for_update())
-    if user.used_seconds + duration > settings().free_minutes * 60:
-        raise MediaError(
-            "This video exceeds your remaining processing allowance. Try a shorter video."
-        )
-    user.used_seconds += duration
-    p.quota_reserved = duration
-    db.commit()
+    try:
+        credits.reserve(db,p,duration)
+        db.commit()
+    except ValueError as exc:
+        raise MediaError(str(exc))
 
 
 def refund_quota(db, p):
-    if p.quota_reserved:
-        user = db.scalar(select(User).where(User.id == p.user_id).with_for_update())
-        user.used_seconds = max(0, user.used_seconds - p.quota_reserved)
-        p.quota_reserved = 0
+    credits.refund(db,p)
 
 
 def failure_message(exc):
@@ -74,6 +68,7 @@ def failure_message(exc):
 
 
 @celery.task(name="app.worker.process_project")
+@serial_processing
 def process_project(project_id):
     with SessionLocal() as db:
         result = db.execute(
@@ -86,7 +81,14 @@ def process_project(project_id):
             return
         p = db.get(Project, project_id)
 
+        def check_cancel():
+            with db.no_autoflush:
+                status = db.scalar(select(Project.status).where(Project.id == project_id).with_for_update())
+            if status in {"cancelling", "cancelled"}:
+                raise MediaError("Clipping cancelled")
+
         def progress(value, stage=None):
+            check_cancel()
             p.progress = value
             if stage:
                 p.stage = stage
@@ -111,6 +113,23 @@ def process_project(project_id):
             source = storage.path(p.source_key)
             media = probe(source)
             p.media = media
+            if p.config.get("workflow") == "manual":
+                check_cancel()
+                end = min(media["duration"], 180)
+                if end <= 0:
+                    raise MediaError("Video has no playable duration")
+                edits = EditDecision(segments=[{"start": 0, "end": end}],
+                    resolution=p.config.get("resolution", 1080), reframe="fit", captions=CaptionStyle(enabled=False)).model_dump()
+                db.add(Clip(project_id=p.id, title=p.name, start=0, end=end, score=0,
+                    description="Manual edit · choose your own cuts. No AI analysis performed.",
+                    reasons=["Manually selected footage; no AI score"], headlines=[], edits=edits))
+                p.status = "ready"
+                p.stage = "Ready to edit manually"
+                p.progress = 100
+                p.error = None
+                p.analysis = {"workflow": "manual", "warnings": ["Automatic transcription is not run for manual projects. Add timed captions in the editor."]}
+                db.commit()
+                return
             reserve_quota(db, p, media["duration"])
             progress(12, "Preparing audio")
             warnings = []
@@ -168,7 +187,7 @@ def process_project(project_id):
                 "scenes": scenes,
                 "audio_rms": energy,
                 "warnings": warnings,
-                "ranking_method": "Editorial heuristic: speech 30%, lexical variety 20%, audio intensity 20%, scene changes 10%, ending completeness 20%. Configured speaker changes contribute 10% when detected (speech and lexical weights reduce by 5% each). Optional local LLM assessment is identified per clip.",
+                "ranking_method": "Editorial heuristic: speech 30%, lexical variety 20%, audio intensity 20%, scene changes 10%, ending completeness 20%. Configured speaker changes contribute 10% when detected (speech and lexical weights reduce by 5% each). When instructions contain topics, literal topic coverage contributes 60% and editorial signals 40%. Optional local LLM instruction/context assessment contributes 70% of the final score and is identified per clip. Explicit timestamp ranges and excluded topic keywords constrain selection.",
             }
             existing = list(db.scalars(select(Clip).where(Clip.project_id == p.id)))
             if existing:
@@ -180,6 +199,7 @@ def process_project(project_id):
                 edits = EditDecision(
                     segments=[{"start": c["start"], "end": c["end"]}],
                     words=c["words"],
+                    resolution=p.config.get("resolution", 1080),
                     captions=CaptionStyle(
                         **CAPTION_PRESETS[p.config.get("caption_preset", "bold")]
                     ),
@@ -198,6 +218,8 @@ def process_project(project_id):
                         edits=edits,
                     )
                 )
+            check_cancel()
+            credits.complete(db,p)
             p.status = "ready"
             p.stage = "Your highlights are ready"
             p.progress = 100
@@ -207,9 +229,10 @@ def process_project(project_id):
             db.rollback()
             p = db.get(Project, project_id)
             refund_quota(db, p)
-            p.status = "failed"
-            p.stage = "Processing paused"
-            p.error = failure_message(exc)
+            cancelled = p.status in {"cancelling", "cancelled"}
+            p.status = "cancelled" if cancelled else "failed"
+            p.stage = "Clipping cancelled" if cancelled else "Processing paused"
+            p.error = None if cancelled else failure_message(exc)
             db.commit()
             log.error(
                 json.dumps(
@@ -223,6 +246,7 @@ def process_project(project_id):
 
 
 @celery.task(name="app.worker.render_export", soft_time_limit=1700, time_limit=1800)
+@serial_processing
 def render_export(export_id):
     with SessionLocal() as db:
         result = db.execute(
@@ -265,6 +289,7 @@ def render_export(export_id):
                 custom_font=(storage.path(font.key), font.family) if font else None,
                 logo=storage.path(logo.key) if logo else None,
             )
+            credits.complete(db, credits.export_account(db, e))
             e.output_key = key
             e.status = "complete"
             e.progress = 100
@@ -273,6 +298,7 @@ def render_export(export_id):
             db.rollback()
             output.unlink(missing_ok=True)
             e = db.get(Export, export_id)
+            credits.refund(db, credits.export_account(db, e))
             e.status = "failed"
             e.error = failure_message(exc)
             db.commit()
@@ -281,13 +307,19 @@ def render_export(export_id):
 
 @celery.task(name="app.worker.cleanup")
 def cleanup():
+    from .uploads import cleanup_uploads
+    cleanup_uploads()
+    from .accounts import cleanup_deleted_media
+    with SessionLocal() as db:
+        for user in db.scalars(select(User).where(User.deleted==True)):
+            cleanup_deleted_media(db,user)
     # Reclaim failed hard-timeout jobs. Never delete user source media or finished exports.
     cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     with SessionLocal() as db:
         for p in db.scalars(
             select(Project)
             .where(
-                Project.status.in_(["processing", "queued"]),
+                Project.status.in_(["processing", "queued", "cancelling"]),
                 Project.updated_at < cutoff,
             )
             .with_for_update()
@@ -304,6 +336,7 @@ def cleanup():
             )
             .with_for_update()
         ):
+            credits.refund(db, credits.export_account(db, e))
             e.status = "failed"
             e.error = (
                 "Export worker was interrupted. Start another export from the editor."
@@ -324,6 +357,6 @@ def cleanup():
 
     # Disposable preview cache only; source media and exports are retained.
     preview_dir = storage.path("previews/.keep").parent
-    for preview in preview_dir.glob("*.mp4"):
+    for preview in preview_dir.rglob("*.mp4"):
         if time.time() - preview.stat().st_mtime > 7 * 86400:
             preview.unlink(missing_ok=True)

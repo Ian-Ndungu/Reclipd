@@ -32,6 +32,7 @@ class UserOut(BaseModel):
     name: str
     is_admin: bool
     used_seconds: float
+    preferences: dict = Field(default_factory=dict)
 
 
 from pathlib import Path
@@ -43,6 +44,8 @@ CAPTION_PRESETS = json.loads(
 
 
 class ProjectConfig(BaseModel):
+    workflow: Literal["ai", "manual"] = "ai"
+    resolution: Literal[720, 1080] = 1080
     content_category: Literal[
         "auto", "podcast", "interview", "education", "product", "commentary"
     ] = "auto"
@@ -172,6 +175,8 @@ class Segment(BaseModel):
 
 
 class EditDecision(BaseModel):
+    watermark: bool = True
+    watermark_version: Literal[1, 2, 3, 4, 5, 6, 7] = 7
     segments: list[Segment] = Field(min_length=1, max_length=20)
     captions: CaptionStyle = Field(default_factory=CaptionStyle)
     words: list[Word] = Field(default_factory=list, max_length=10000)
@@ -181,6 +186,15 @@ class EditDecision(BaseModel):
     headline: str = Field(default="", max_length=240)
     show_headline: bool = False
     volume: float = Field(default=1, ge=0, le=1)
+    brightness: float = Field(default=1, ge=0.5, le=1.5)
+    contrast: float = Field(default=1, ge=0.5, le=1.5)
+    saturation: float = Field(default=1, ge=0, le=2)
+    flip_horizontal: bool = False
+    speed: float = Field(default=1, ge=0.25, le=4)
+    fade_in: float = Field(default=0, ge=0, le=2)
+    fade_out: float = Field(default=0, ge=0, le=2)
+    transition: Literal["none", "fade", "dissolve", "slideleft", "slideright", "wipeleft", "wiperight"] = "none"
+    transition_duration: float = Field(default=0.3, ge=0.1, le=1)
     brand_kit_id: str | None = None
     logo_asset_id: str | None = None
 
@@ -277,7 +291,7 @@ class BrandOut(BaseModel):
 class UsageOut(BaseModel):
     plan: str
     used_seconds: float
-    limit_seconds: int
+    limit_seconds: int | None
     billing_enabled: bool
 
 
