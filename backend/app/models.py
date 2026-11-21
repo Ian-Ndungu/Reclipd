@@ -112,6 +112,17 @@ class SourceConnection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class DriveConnection(Base):
+    """One encrypted OAuth credential set per RECLIPD account."""
+    __tablename__ = "drive_connections"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    refresh_token: Mapped[str] = mapped_column(Text)
+    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class Payment(Base):
     __tablename__ = 'payments'
     reference: Mapped[str] = mapped_column(String(40), primary_key=True)

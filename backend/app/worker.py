@@ -98,15 +98,19 @@ def process_project(project_id):
             if not p.source_key:
                 progress(4, "Importing authorized media")
                 key = f"sources/{p.id}.mp4"
-                from .imports import youtube_id
-                from .youtube import retrieve
-                video_id = youtube_id(p.import_url)
-                if video_id:
-                    if not p.rights_confirmed:
-                        raise ValueError("Media rights confirmation is required.")
-                    retrieve(video_id, storage.path(key), progress)
+                if p.import_url.startswith("gdrive://"):
+                    from .drive import download_video
+                    download_video(db, p.user_id, p.import_url.removeprefix("gdrive://"), storage.path(key), progress)
                 else:
-                    download_authorized(p.import_url, storage.path(key))
+                    from .imports import youtube_id
+                    from .youtube import retrieve
+                    video_id = youtube_id(p.import_url)
+                    if video_id:
+                        if not p.rights_confirmed:
+                            raise ValueError("Media rights confirmation is required.")
+                        retrieve(video_id, storage.path(key), progress)
+                    else:
+                        download_authorized(p.import_url, storage.path(key))
                 p.source_key = key
                 p.import_url = None
                 db.commit()

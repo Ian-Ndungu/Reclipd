@@ -47,6 +47,7 @@ The supplied Compose binds the web/API ports to loopback. It does not expose Pos
 | `WHISPER_MODEL` | `base` by default; `tiny` is faster for smoke tests. First use downloads model files. A local model directory is also supported. |
 | `WHISPER_DEVICE`, `WHISPER_COMPUTE_TYPE` | Defaults to CPU/int8. GPU deployment requires an appropriate runtime/image. |
 | `IMPORT_ALLOWED_HOSTS` | JSON list of exact operator-approved HTTPS hostnames for direct media files. Empty by default. |
+| `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` | Optional server-only OAuth credentials for user-authorized Google Drive video imports. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Optional trusted local OpenAI-compatible service; base URL typically ends in `/v1`. Never passed to the browser. |
 | `SPEAKER_MODEL_PATH` | Optional provisioned local Pyannote pipeline; see below. |
 | `COOKIE_SECURE`, `CORS_ORIGINS` | Set secure cookies and the exact HTTPS origins for a production deployment. |
@@ -164,7 +165,19 @@ Preflight checks source reachability, content type and advertised size via HEAD;
 ### Appearance and connected originals
 Light is the default. Settings → Appearance offers Light, Dark and System, persisted locally and applied before React loads. The selector appears only in Settings.
 
-YouTube references can be connected to an already uploaded, ready original belonging to the signed-in account. The New Project source panel records that association after rights confirmation; subsequent imports reuse the original through the existing worker. This is local RECLIPD storage, not a connected Google Drive or YouTube download service. `YouTubeMediaProvider` in `backend/app/imports.py` is the extension point for an approved future integration. Metadata keys do not grant footage access.
+YouTube references can be connected to an already uploaded, ready original belonging to the signed-in account. The New Project source panel records that association after rights confirmation; subsequent imports reuse the original through the existing worker. This local-original workflow is separate from the opt-in Google Drive connector below and is not a YouTube download service. `YouTubeMediaProvider` in `backend/app/imports.py` is the extension point for an approved future integration. Metadata keys do not grant footage access.
+
+### Google Drive source imports
+
+RECLIPD can import a video selected from the signed-in user's Google Drive after the user authorizes the application. The app lists video files only, downloads the selected file in the background through the Google Drive API, checks the configured size limit, then sends it through the existing FFprobe, transcription, ranking, editing, and export pipeline. OAuth tokens are encrypted in the database and are never sent to the browser. Disconnecting Drive deletes the stored connection.
+
+To enable it, create a **Web application** OAuth client in Google Cloud, enable the Google Drive API, and add this exact authorized redirect URI:
+
+```text
+https://YOUR_PUBLIC_RECLIPD_HOST/api/integrations/google-drive/callback
+```
+
+Set `APP_URL` to the same HTTPS public origin and set `GOOGLE_DRIVE_CLIENT_ID` and `GOOGLE_DRIVE_CLIENT_SECRET` only in the server `.env`; rebuild/recreate the API and worker afterward. During Google OAuth consent-screen testing, add each tester's Google account as a test user. The feature uses the read-only `drive.readonly` scope and requires the user to select media they own or are authorized to use. It is a connected-storage workflow, not a YouTube access bypass.
 
 Guest link drafts survive login. New projects support clip count/duration, source language, caption presets and a clipping brief. The deterministic ranker uses keyword relevance; a configured local LLM can interpret the brief. Exports remain 9:16 and captions remain in the source language. The editor adds headline overlays, volume, stroke/background colors and letter spacing. Custom line-height and translated output are not implemented.
 

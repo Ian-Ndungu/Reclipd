@@ -55,6 +55,7 @@ import {
   X,
   Eye,
   EyeOff,
+  HardDrive,
 } from "lucide-react";
 import { api, json, time, uploadProject } from "./api";
 import {
@@ -724,6 +725,7 @@ function NewProject() {
   const [workflow, setWorkflow] = useState<"ai" | "manual">(draft.workflow || "ai");
   const [url, setUrl] = useState(draft.url || "");
   const [source, setSource] = useState(draft.source || "");
+  const [driveFile, setDriveFile] = useState<DriveFile | null>(null);
   const [uploadPercent, setUploadPercent] = useState(0);
   const [uploadLimits, setUploadLimits] = useState<{max_bytes: number; max_seconds: number} | null>(null);
   useEffect(() => {
@@ -792,6 +794,17 @@ function NewProject() {
               f.set("config", json(config));
               f.set("rights_confirmed", "true");
               p = await uploadProject<Project>(f, setUploadPercent);
+            } else if (mode === "drive") {
+              if (!driveFile) throw Error("Connect Google Drive and choose a video first");
+              p = await api("/integrations/google-drive/projects", {
+                method: "POST",
+                body: json({
+                  file_id: driveFile.id,
+                  name: f.get("name") || driveFile.name,
+                  rights_confirmed: true,
+                  config,
+                }),
+              });
             } else {
               p = await api("/projects/import", {
                 method: "POST",
@@ -834,6 +847,14 @@ function NewProject() {
             </button>
             <button
               type="button"
+              disabled={workflow === "manual"}
+              className={mode === "drive" ? "active" : ""}
+              onClick={() => setMode("drive")}
+            >
+              <HardDrive size={16} /> Google Drive
+            </button>
+            <button
+              type="button"
               className={mode === "upload" ? "active" : ""}
               onClick={() => setMode("upload")}
             >
@@ -869,6 +890,8 @@ function NewProject() {
                 aria-label="Choose video"
               />
             </label>
+          ) : mode === "drive" ? (
+            <GoogleDriveInput value={driveFile} onChange={setDriveFile} />
           ) : (
             <LinkInput
               authenticated={!!user}
@@ -1024,7 +1047,7 @@ function NewProject() {
           <ErrorBox error={error} />
           <button
             className="button primary"
-            disabled={busy || (!!user && mode === "link" && !linkReady)}
+            disabled={busy || (!!user && mode === "link" && !linkReady) || (!!user && mode === "drive" && !driveFile)}
           >
             {busy ? (
               <>
@@ -1044,6 +1067,36 @@ function NewProject() {
       </form>
     </>
   );
+}
+
+type DriveFile = {
+  id: string;
+  name: string;
+  size: number;
+  mime_type: string;
+  duration_ms: number | null;
+  supported: boolean;
+};
+
+function GoogleDriveInput({ value, onChange }: { value: DriveFile | null; onChange: (file: DriveFile | null) => void }) {
+  const [status, setStatus] = useState<{enabled: boolean; connected: boolean} | null>(null);
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const reload = async () => {
+    setLoading(true); setError("");
+    try {
+      const current = await api<{enabled: boolean; connected: boolean}>("/integrations/google-drive/status");
+      setStatus(current);
+      if (current.connected) setFiles(await api<DriveFile[]>("/integrations/google-drive/files"));
+    } catch (e) { setError((e as Error).message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void reload(); }, []);
+  if (loading && !status) return <p role="status"><LoaderCircle className="spin" size={16}/> Checking Google Drive…</p>;
+  if (!status?.enabled) return <section className="panel"><h3>Connect Google Drive</h3><p className="muted">Google Drive imports need a server-side OAuth client before they can be enabled.</p><ErrorBox error={error || "Google Drive is not configured yet."}/></section>;
+  if (!status.connected) return <section className="panel"><h3>Connect Google Drive</h3><p className="muted">Choose a video you own or are authorized to edit. RECLIPD reads only the video you select.</p><button type="button" className="button primary" onClick={async () => { try { const data = await api<{authorization_url: string}>("/integrations/google-drive/authorize", {method:"POST"}); window.location.assign(data.authorization_url); } catch (e) { setError((e as Error).message); } }}>Connect Google Drive</button><ErrorBox error={error}/></section>;
+  return <section className="panel"><div className="row"><div><h3>Choose a Google Drive video</h3><p className="muted">Only videos within the current upload limit are available.</p></div><button type="button" className="button secondary small" onClick={() => void reload()} disabled={loading}><RefreshCw size={14}/> Refresh</button></div>{loading ? <p role="status"><LoaderCircle className="spin" size={16}/> Loading your videos…</p> : <label>Video<select value={value?.id || ""} onChange={(e) => onChange(files.find((file) => file.id === e.target.value) || null)}><option value="">Select a video…</option>{files.map((file) => <option key={file.id} value={file.id} disabled={!file.supported}>{file.name}{file.duration_ms ? ` · ${time(file.duration_ms / 1000)}` : ""}{file.supported ? "" : " · exceeds limit"}</option>)}</select></label>}{!loading && !files.length && <p className="muted">No supported video files found in Drive.</p>}<ErrorBox error={error}/></section>;
 }
 function ProjectPage() {
   const {confirmDelete, notify} = useDeleteNotice();

@@ -991,3 +991,5 @@ app.include_router(paypal_router)
 
 from .uploads import router as uploads_router
 app.include_router(uploads_router)
+from .drive import router as drive_router
+app.include_router(drive_router)

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""
     app_url: str = "http://localhost:5173"
+    google_drive_client_id: str = ""
+    google_drive_client_secret: str = Field(default="", repr=False)
     paypal_client_id: str = ""
     paypal_client_secret: str = ""
     paypal_merchant_id: str = ""
