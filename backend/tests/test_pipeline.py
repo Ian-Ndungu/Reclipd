@@ -31,7 +31,7 @@ def test_ranking_is_deterministic_grounded_and_nonoverlapping():
     for c in first:
         assert 10 <= c["end"] - c["start"] <= 25
         assert 0 <= c["score"] <= 100
-        assert len(c["reasons"]) == 5
+        assert len(c["reasons"]) == 6
         assert c["title"].startswith("word")
     for a, b in zip(first, first[1:]):
         assert (
@@ -39,6 +39,22 @@ def test_ranking_is_deterministic_grounded_and_nonoverlapping():
             / min(a["end"] - a["start"], b["end"] - b["start"])
             < 0.35
         )
+
+
+def test_ranking_explains_real_opening_signals_and_pause_boundaries():
+    source = [
+        {"start": 0, "end": .5, "word": "Why?"},
+        {"start": .6, "end": 1.1, "word": "You"},
+        {"start": 1.2, "end": 1.7, "word": "need"},
+        {"start": 1.8, "end": 2.3, "word": "this."},
+        {"start": 3.5, "end": 4.0, "word": "But"},
+        {"start": 4.1, "end": 4.6, "word": "only"},
+        {"start": 4.7, "end": 5.2, "word": "today."},
+    ]
+    candidates = rank_candidates(source, [], [.2] * 8, 8, {"clip_count": 2, "min_duration": 3, "max_duration": 4})
+    reasons = [reason for candidate in candidates for reason in candidate["reasons"]]
+    assert any(reason.startswith("Opening clarity signals:") for reason in reasons)
+    assert any("speech pause" in reason for reason in reasons)
 
 
 def test_silent_short_source_and_count_limit():

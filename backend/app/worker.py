@@ -187,7 +187,7 @@ def process_project(project_id):
                 "scenes": scenes,
                 "audio_rms": energy,
                 "warnings": warnings,
-                "ranking_method": "Editorial heuristic: speech 30%, lexical variety 20%, audio intensity 20%, scene changes 10%, ending completeness 20%. Configured speaker changes contribute 10% when detected (speech and lexical weights reduce by 5% each). When instructions contain topics, literal topic coverage contributes 60% and editorial signals 40%. Optional local LLM instruction/context assessment contributes 70% of the final score and is identified per clip. Explicit timestamp ranges and excluded topic keywords constrain selection.",
+                "ranking_method": "Editorial heuristic: speech 30%, lexical variety 18%, audio intensity 18%, scene changes 8%, ending completeness 18%, and source-derived opening clarity 8%. Configured speaker changes contribute 10% when detected (speech and lexical weights reduce by 5% each). When instructions contain topics, literal topic coverage contributes 60% and editorial signals 40%. Optional local LLM instruction/context assessment contributes 70% of the final score and is identified per clip. Explicit timestamp ranges and excluded topic keywords constrain selection.",
             }
             existing = list(db.scalars(select(Clip).where(Clip.project_id == p.id)))
             if existing:

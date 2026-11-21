@@ -200,6 +200,20 @@ def rank_candidates(words, scenes, energy, duration, config, speaker_turns=None)
             end = ends[-1]
         excerpt = [w for w in words if w["start"] >= start and w["end"] <= end]
         length = end - start
+        opening = " ".join(w["word"] for w in excerpt[:14])
+        opening_lower = opening.lower()
+        # These are observable transcript patterns, not a prediction of views.
+        # A clear question, direct address, contrast, or concrete first detail
+        # helps a viewer understand an excerpt without the full source.
+        hook_signals = [
+            "?" in opening,
+            bool(re.search(r"\b(you|your|imagine|listen|watch)\b", opening_lower)),
+            bool(re.search(r"\b(but|however|instead|unless|except)\b", opening_lower)),
+            bool(re.search(r"\b\d+(?:[.,]\d+)?\b", opening_lower)),
+        ]
+        hook = sum(hook_signals) / len(hook_signals)
+        prior = next((w for w in reversed(words) if w["end"] <= start), None)
+        pause = max(0, start - prior["end"]) if prior else 0
         speech = min(1, sum(w["end"] - w["start"] for w in excerpt) / max(1, length))
         unique = len({w["word"].lower().strip(".,!?") for w in excerpt}) / max(
             1, len(excerpt)
@@ -214,10 +228,11 @@ def rank_candidates(words, scenes, energy, duration, config, speaker_turns=None)
             100
             * (
                 0.30 * speech
-                + 0.20 * unique
-                + 0.20 * intensity
-                + 0.10 * scene_signal
-                + 0.20 * boundary
+                + 0.18 * unique
+                + 0.18 * intensity
+                + 0.08 * scene_signal
+                + 0.18 * boundary
+                + 0.08 * hook
             ),
             1,
         )
@@ -232,8 +247,11 @@ def rank_candidates(words, scenes, energy, duration, config, speaker_turns=None)
             f"Lexical variety: {unique:.0%} unique transcript words",
             f"Audio intensity: {intensity:.0%} of source peak RMS",
             f"{scene_count} scene changes inside the segment",
+            f"Opening clarity signals: {hook:.0%} (question, direct address, contrast, or concrete detail)",
             f'{"Sentence-aligned" if boundary==1 else "Time/scene-aligned"} ending',
         ]
+        if pause >= 0.7:
+            reasons.append(f"Starts after a {pause:.1f}-second speech pause")
         if speaker_turns:
             reasons.append(
                 f"{turn_count} locally detected speaker changes (10% weight)"
